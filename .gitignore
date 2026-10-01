@@ -1,0 +1,5 @@
+/build/
+/assets/icons/
+/assets/icon.png
+__pycache__/
+*.pyc
