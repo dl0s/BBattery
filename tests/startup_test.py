@@ -13,6 +13,7 @@ def test():
     evidence = {"result": "FAIL", "launches": []}
     try:
         receipt, _, sandbox = device.receipt()
+        original = device.app_call("state")
         for attempt, parameter in enumerate(("current", "voltage", "temperature"), 1):
             device.stop_gui()
             device.launch()
@@ -21,6 +22,8 @@ def test():
             pids = device.gui_pids()
             assert len(pids) == 1, "Expected exactly one GUI process"
             assert state["euid"] != 0 and state["live"]["fresh"], "GUI or collector unavailable"
+            assert state["alerts"] == original["alerts"], "Startup changed persisted alert settings"
+            assert state["live"]["paused"] == original["live"]["paused"], "Startup changed sampling settings"
             logs = device.ssh("cat " + device.quote(sandbox + "/logs/log"))
             assert "BBattery " + receipt["version"] + " native scene ready" in logs
             assert "SIGSEGV" not in logs, "Launch produced a segmentation fault"

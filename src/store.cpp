@@ -1,4 +1,5 @@
 #include "store.h"
+#include "capacity.h"
 #include <QFile>
 #include <QFileInfo>
 #include <QDir>
@@ -103,6 +104,7 @@ bool Store::open(const QString &path,bool writer){
         "source_changed INTEGER,gap_reason TEXT,error TEXT);"
         "CREATE INDEX IF NOT EXISTS samples_time ON samples(utc_ms);"
         "CREATE INDEX IF NOT EXISTS samples_session ON samples(session_id,utc_ms);"
+        "CREATE INDEX IF NOT EXISTS samples_session_order ON samples(session_id,id);"
         "CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY,utc_ms INTEGER NOT NULL,kind TEXT NOT NULL,"
         "text TEXT NOT NULL,session_id INTEGER,sample_id INTEGER);"
         "CREATE INDEX IF NOT EXISTS events_time ON events(utc_ms);"
@@ -114,6 +116,11 @@ bool Store::open(const QString &path,bool writer){
     if(version.isEmpty() || version.first().toMap()["value"]!="1"){failure="Unsupported database schema";return false;}
     if(!query("SELECT id FROM samples LIMIT 1").isEmpty())pendingBreak="collector-restart";
     return execute("UPDATE sessions SET end_ms=last_ms,reason='collector-restart' WHERE end_ms IS NULL");
+}
+QVariantMap Store::capacitySession(const QString &mode,int batteryId,qint64 sessionId){
+    if(batteryId<0||(mode!="charge"&&mode!="discharge"))return QVariantMap();
+    QVariantList rows=query(Capacity::historySql(),QVariantList()<<mode<<batteryId<<sessionId<<sessionId<<sessionId);
+    return rows.isEmpty()?QVariantMap():rows.first().toMap();
 }
 bool Store::beginSession(const Sample &s){
     startSoc=s.has("soc")?int(s.value("soc")):-1;lastSoc=startSoc;count=0;mah=0;mwh=0;
@@ -151,7 +158,9 @@ bool Store::append(const Sample &s){
     if(ok && havePrevious && step.chargeValid){mah+=step.charge;covered+=step.seconds;}
     if(ok && havePrevious && step.energyValid){mwh+=step.energy;energyCovered+=step.seconds;}
     if(s.has("soc")){
-        int soc=int(s.value("soc"));if(lastSoc>=0 && s.mode=="discharge" && soc>lastSoc+2)stableSoc=false;
+        int soc=int(s.value("soc"));
+        if(lastSoc>=0&&(s.mode=="charge"||s.mode=="discharge")&&
+           !Capacity::followsSoc(s.mode=="charge",lastSoc,soc))stableSoc=false;
         lastSoc=soc;
     }
     QVariantList v;v<<s.utc<<s.mono<<s.run<<session<<snapshotId<<s.interval<<int(s.ready)<<s.batteryId<<s.mode<<s.charger<<s.phase;

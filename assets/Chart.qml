@@ -9,16 +9,18 @@ Container {
     property bool compact: false
     property bool inspectable: false
     horizontalAlignment: HorizontalAlignment.Fill
+    topMargin: ui.du(0.5); bottomMargin: ui.du(0.5)
     Label {
         text: title
-        textStyle.base: SystemDefaults.TextStyles.SmallText
+        textStyle.fontSize: FontSize.PercentageValue
+            textStyle.fontSizeValue: 60
         textStyle.color: Color.create("#d9dfe3")
         bottomMargin: 0
     }
     Container {
         id: surface
         horizontalAlignment: HorizontalAlignment.Fill
-        preferredHeight: compact ? ui.du(13) : ui.du(19)
+        preferredHeight: compact ? ui.du(12) : ui.du(18)
         minHeight: preferredHeight
         maxHeight: preferredHeight
         layout: AbsoluteLayout {}
@@ -51,7 +53,8 @@ Container {
         Label {
             text: axes ? axes.high : ""
             preferredWidth: surface.w * 64 / 720
-            textStyle.base: SystemDefaults.TextStyles.SmallText
+            textStyle.fontSize: FontSize.PercentageValue
+            textStyle.fontSizeValue: 60
             textStyle.color: Color.create("#b1b6bc")
             textStyle.textAlign: TextAlign.Right
             layoutProperties: AbsoluteLayoutProperties { positionX: 0; positionY: surface.h * 28 / surface.sourceHeight - surface.labelHeight / 2 }
@@ -59,7 +62,8 @@ Container {
         Label {
             text: axes ? axes.middle : ""
             preferredWidth: surface.w * 64 / 720
-            textStyle.base: SystemDefaults.TextStyles.SmallText
+            textStyle.fontSize: FontSize.PercentageValue
+            textStyle.fontSizeValue: 60
             textStyle.color: Color.create("#b1b6bc")
             textStyle.textAlign: TextAlign.Right
             layoutProperties: AbsoluteLayoutProperties { positionX: 0; positionY: surface.h * (surface.sourceHeight - 10) / (2 * surface.sourceHeight) - surface.labelHeight / 2 }
@@ -67,7 +71,8 @@ Container {
         Label {
             text: axes ? axes.low : ""
             preferredWidth: surface.w * 64 / 720
-            textStyle.base: SystemDefaults.TextStyles.SmallText
+            textStyle.fontSize: FontSize.PercentageValue
+            textStyle.fontSizeValue: 60
             textStyle.color: Color.create("#b1b6bc")
             textStyle.textAlign: TextAlign.Right
             layoutProperties: AbsoluteLayoutProperties { positionX: 0; positionY: surface.h * (surface.sourceHeight - 38) / surface.sourceHeight - surface.labelHeight / 2 }
@@ -75,14 +80,16 @@ Container {
         Label {
             text: axes ? axes.start : ""
             preferredWidth: surface.w * 130 / 720
-            textStyle.base: SystemDefaults.TextStyles.SmallText
+            textStyle.fontSize: FontSize.PercentageValue
+            textStyle.fontSizeValue: 60
             textStyle.color: Color.create("#b1b6bc")
             layoutProperties: AbsoluteLayoutProperties { positionX: surface.w * 76 / 720; positionY: surface.h * (surface.sourceHeight - 31) / surface.sourceHeight }
         }
         Label {
             text: axes ? axes.center : ""
             preferredWidth: surface.w * 130 / 720
-            textStyle.base: SystemDefaults.TextStyles.SmallText
+            textStyle.fontSize: FontSize.PercentageValue
+            textStyle.fontSizeValue: 60
             textStyle.color: Color.create("#b1b6bc")
             textStyle.textAlign: TextAlign.Center
             layoutProperties: AbsoluteLayoutProperties { positionX: surface.w * 323 / 720; positionY: surface.h * (surface.sourceHeight - 31) / surface.sourceHeight }
@@ -90,7 +97,8 @@ Container {
         Label {
             text: axes ? axes.end : ""
             preferredWidth: surface.w * 130 / 720
-            textStyle.base: SystemDefaults.TextStyles.SmallText
+            textStyle.fontSize: FontSize.PercentageValue
+            textStyle.fontSizeValue: 60
             textStyle.color: Color.create("#b1b6bc")
             textStyle.textAlign: TextAlign.Right
             layoutProperties: AbsoluteLayoutProperties { positionX: surface.w * 570 / 720; positionY: surface.h * (surface.sourceHeight - 31) / surface.sourceHeight }
@@ -99,7 +107,8 @@ Container {
             text: axes ? axes.empty : ""
             visible: text !== ""
             preferredWidth: surface.w * 624 / 720
-            textStyle.base: SystemDefaults.TextStyles.SmallText
+            textStyle.fontSize: FontSize.PercentageValue
+            textStyle.fontSizeValue: 60
             textStyle.color: Color.create("#b1b6bc")
             textStyle.textAlign: TextAlign.Center
             layoutProperties: AbsoluteLayoutProperties { positionX: surface.w * 76 / 720; positionY: surface.h / 2 - surface.labelHeight / 2 }

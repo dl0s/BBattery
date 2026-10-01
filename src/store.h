@@ -17,6 +17,7 @@ public:
     bool recordEvent(const Sample &sample,const QString &kind,const QString &text,int cooldownSeconds=0);
     QVariantList history(qint64 begin,qint64 end,QVariantMap *summary,qint64 sessionId=0);
     QVariantList query(const QString &sql,const QVariantList &bindings=QVariantList());
+    QVariantMap capacitySession(const QString &mode,int batteryId,qint64 sessionId=0);
     bool execute(const QString &sql,const QVariantList &bindings=QVariantList());
     sqlite3 *handle() const { return db; }
 private:

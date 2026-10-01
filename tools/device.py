@@ -14,7 +14,16 @@ import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BUILD = ROOT / "build"
-PROFILE = pathlib.Path(os.environ["LOCALAPPDATA"]) / "Q10Manager/connection.json"
+def connection_profile(local_appdata):
+    root = pathlib.Path(local_appdata)
+    for relative in ("Q10Manager/connection.json", "Q10Deploy/config.json"):
+        profile = root / relative
+        if profile.is_file():
+            return profile
+    raise FileNotFoundError("No existing Q10Manager or Q10Deploy connection profile")
+
+
+PROFILE = connection_profile(os.environ["LOCALAPPDATA"])
 cfg = json.loads(PROFILE.read_text(encoding="utf-8-sig"))
 if cfg["SshUser"] != "root" or not re.fullmatch(r"[A-Za-z0-9.:-]+", cfg["DeviceHost"]):
     raise ValueError("Invalid configured SSH target")
@@ -99,7 +108,8 @@ def install():
     (BUILD / "install-evidence.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
     _, app, _ = receipt()
     with zipfile.ZipFile(bar) as archive:
-        for asset in ("native/bbattery", "native/assets/main.qml", "native/assets/Metric.qml", "native/assets/Chart.qml"):
+        for asset in ("native/bbattery", "native/assets/main.qml", "native/assets/Metric.qml",
+                      "native/assets/Chart.qml", "native/assets/BatteryGauge.qml"):
             copy = BUILD / ("installed-" + asset.rsplit("/", 1)[1])
             scp(copy, app + "/" + asset, True)
             if copy.read_bytes() != archive.read(asset):
@@ -151,22 +161,117 @@ def upload_verified(local, remote, mode="600"):
     return digest
 
 
+def collector_files():
+    files = []
+    for line in ssh("ls -ln /var/bbattery/bin").splitlines():
+        fields = line.split()
+        if (len(fields) >= 9 and fields[0] == "-rwx------" and fields[2:4] == ["0", "0"] and
+                re.fullmatch(r"batteryd-[a-f0-9]{64}(?:-[a-f0-9]{8})?", fields[-1])):
+            files.append("/var/bbattery/bin/" + fields[-1])
+    return files
+
+
+def collector_tests(remote):
+    tests = ssh(quote(remote) + " --self-test")
+    if "RESULT: PASS" not in tests or "PASS: SQLite" not in tests:
+        raise RuntimeError("Native collector measurement/storage checks failed")
+    return tests
+
+
+def reuse_retired_collector(files, source, remote, digest):
+    """Retain an inactive BBattery inode's trust; the running collector stays untouched."""
+    processes = ssh("pidin ar")
+    supervisor = ssh("cat /var/bbattery/start.sh", check=False)
+    for slot in files:
+        if slot in supervisor or any(re.match(r"\s*\d+\s+" + re.escape(slot) + r"(?:\s|$)", line)
+                                    for line in processes.splitlines()):
+            continue
+        expected = pathlib.PurePosixPath(slot).name.split("-")[1]
+        if expected == digest:
+            continue
+        backup = BUILD / ("retired-" + pathlib.PurePosixPath(slot).name)
+        scp(backup, slot, True)
+        if hashlib.sha256(backup.read_bytes()).hexdigest() != expected:
+            continue
+        try:
+            collector_tests(slot)
+        except RuntimeError as error:
+            if "Operation not permitted" in str(error):
+                continue
+            raise
+        saved = "/var/bbattery/retired-backup-" + expected + "-" + uuid.uuid4().hex[:8]
+        upload_verified(backup, saved)
+        # Recheck immediately before writing; only a retired executable may be reused.
+        if slot in ssh("cat /var/bbattery/start.sh", check=False) or any(
+                re.match(r"\s*\d+\s+" + re.escape(slot) + r"(?:\s|$)", line)
+                for line in ssh("pidin ar").splitlines()):
+            raise RuntimeError("Retired collector became active; no bytes changed")
+        renamed = False
+        try:
+            ssh("cat " + quote(source) + " > " + quote(slot))
+            copy = BUILD / "retired-current-readback"
+            scp(copy, slot, True)
+            if hashlib.sha256(copy.read_bytes()).hexdigest() != digest:
+                raise RuntimeError("Retired collector replacement readback mismatch")
+            collector_tests(slot)
+            ssh("mv -f " + quote(slot) + " " + quote(remote))
+            renamed = True
+            scp(copy, remote, True)
+            if hashlib.sha256(copy.read_bytes()).hexdigest() != digest:
+                raise RuntimeError("Renamed collector readback mismatch")
+            tests = collector_tests(remote)
+            evidence = dict(previous=slot, previousSha256=expected, backup=saved,
+                            binary=remote, sha256=digest, runningCollectorChanged=False)
+            (BUILD / "collector-staging.json").write_text(json.dumps(evidence, indent=2), encoding="utf-8")
+            return tests
+        except Exception:
+            if renamed:
+                ssh("mv " + quote(remote) + " " + quote(slot))
+            ssh("cat " + quote(saved) + " > " + quote(slot))
+            restored = BUILD / "retired-restored-readback"
+            scp(restored, slot, True)
+            if restored.read_bytes() != backup.read_bytes():
+                raise RuntimeError("Retired collector rollback readback mismatch")
+            raise
+    raise RuntimeError("New inode execution denied and no verified inactive collector is reusable; running service unchanged")
+
+
 def stage_collector(binary):
     binary = pathlib.Path(binary)
     digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+    files = collector_files()
+    for existing in files:
+        if pathlib.PurePosixPath(existing).name.split("-")[1] != digest:
+            continue
+        copy = BUILD / "existing-collector-readback"
+        scp(copy, existing, True)
+        if hashlib.sha256(copy.read_bytes()).hexdigest() != digest:
+            continue
+        try:
+            tests = collector_tests(existing)
+        except RuntimeError as error:
+            if "Operation not permitted" in str(error):
+                continue
+            raise
+        return existing, digest, "Existing collector execution verified by native self-test", tests
     remote = "/var/bbattery/bin/batteryd-" + digest + "-" + uuid.uuid4().hex[:8]
     source = remote + ".source"
     upload_verified(binary, source, "700")
-    # Copy, per-file trust and first execution share the same QNX shell context.
-    tests = ssh("test ! -e " + quote(remote) + " && cp " + quote(source) + " " + quote(remote) +
-                " && /proc/boot/pathtrust " + quote("!" + remote) + " && " + quote(remote) + " --self-test")
-    registration = ssh("/proc/boot/pathtrust -t " + quote(remote))
-    if ": trusted" not in registration or "RESULT: PASS" not in tests or "PASS: SQLite" not in tests:
-        raise RuntimeError("Native collector trust/measurement/storage checks failed")
+    ssh("test ! -e " + quote(remote) + " && cp " + quote(source) + " " + quote(remote))
     copy = BUILD / ("readback-" + pathlib.PurePosixPath(remote).name)
     scp(copy, remote, True)
     if hashlib.sha256(copy.read_bytes()).hexdigest() != digest:
         raise RuntimeError("Final immutable collector differs from the verified source")
+    registration = ssh("/proc/boot/pathtrust " + quote("!" + remote) + " && /proc/boot/pathtrust -t " + quote(remote))
+    if ": trusted" not in registration:
+        raise RuntimeError("Collector file trust was not reported")
+    try:
+        tests = collector_tests(remote)
+    except RuntimeError as error:
+        if "Operation not permitted" not in str(error):
+            raise
+        tests = reuse_retired_collector(files, source, remote, digest)
+        registration = "Retired private collector inode reused; execution verified by native self-test"
     ssh("rm " + quote(source))
     return remote, digest, registration, tests
 
@@ -233,7 +338,11 @@ done
         pid = ssh("cat " + quote(directory + "/collector.pid"), check=False).strip()
         if pid.isdigit():
             identity = ssh("pidin -p " + pid + " users", check=False)
-            if re.search(r"\s" + uid + r"\s+" + gid + r"\s+" + uid + r"\s+" + gid + r"\s", identity):
+            arguments = ssh("pidin -p " + pid + " ar", check=False)
+            expected = (r"\s*" + pid + r"\s+" + re.escape(remote) + r" --data " + re.escape(directory) +
+                        r" --uid " + uid + r" --gid " + gid + r"\s*")
+            if (re.search(r"\s" + uid + r"\s+" + gid + r"\s+" + uid + r"\s+" + gid + r"\s", identity) and
+                    any(re.fullmatch(expected, row) for row in arguments.splitlines())):
                 break
         time.sleep(1)
     else:

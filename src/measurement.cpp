@@ -1,4 +1,5 @@
 #include "measurement.h"
+#include "capacity.h"
 #include <QDateTime>
 #include <QStringList>
 #include <cmath>
@@ -53,9 +54,21 @@ Step integrate(const Sample &a,const Sample &b){
     return r;
 }
 QVariant capacityEstimate(const QString &mode,double q,double coverage,int start,int end,bool closed,bool stable){
-    if(mode!="discharge" || !closed || !stable || coverage<0.95 ||
-       start<0 || end<0 || start-end<30 || q<=0) return QVariant();
-    return number(q*100.0/(start-end),1,20000);
+    double value;
+    return mode=="discharge"&&Capacity::interval(false,q,coverage,start,end,closed,stable,value)?QVariant(value):QVariant();
+}
+QVariant chargeCapacityEstimate(double q,double coverage,int start,int end,bool closed,bool stable){
+    double value;return Capacity::interval(true,q,coverage,start,end,closed,stable,value)?QVariant(value):QVariant();
+}
+QVariant remainingCapacityEstimate(const QVariant &remaining,const QVariant &soc){
+    double value;
+    return remaining.isValid()&&!remaining.isNull()&&soc.isValid()&&!soc.isNull()&&
+        Capacity::remaining(remaining.toDouble(),soc.toDouble(),value)?QVariant(value):QVariant();
+}
+QVariant healthCapacityEstimate(const QVariant &design,const QVariant &health){
+    double value;
+    return design.isValid()&&!design.isNull()&&health.isValid()&&!health.isNull()&&
+        Capacity::health(design.toDouble(),health.toDouble(),value)?QVariant(value):QVariant();
 }
 QString modeLabel(const QString &mode){
     if(mode=="charge") return QString::fromUtf8("充电");
@@ -213,6 +226,12 @@ bool selfTest(QString *report){
     CHECK("live session is not a completed capacity test",!capacityEstimate("discharge",1000,1,90,30,false,true).isValid());
     CHECK("SOC reset rejects capacity estimate",!capacityEstimate("discharge",1000,1,90,30,true,false).isValid());
     CHECK("supported interval extrapolation",std::fabs(capacityEstimate("discharge",1200,1,90,30,true,true).toDouble()-2000)<0.0001);
+    CHECK("charge extrapolation is a separate estimate",std::fabs(chargeCapacityEstimate(1200,1,20,80,true,true).toDouble()-2000)<0.0001);
+    CHECK("charge SOC reversal rejects extrapolation",!chargeCapacityEstimate(1200,1,20,80,true,false).isValid());
+    CHECK("remaining capacity uses valid SOC",std::fabs(remainingCapacityEstimate(1000,50).toDouble()-2000)<0.0001);
+    CHECK("low SOC does not magnify capacity noise",!remainingCapacityEstimate(100,5).isValid());
+    CHECK("missing remaining capacity stays unavailable",!remainingCapacityEstimate(QVariant(),50).isValid());
+    CHECK("health capacity is a system-derived estimate",std::fabs(healthCapacityEstimate(2100,90).toDouble()-1890)<0.0001);
     a.charger="NONE";a.values["current"]=-200;
     CHECK("unplugged discharge classification",modeFor(a)=="discharge");
     a.charger="PLUGGED";a.values["current"]=0;

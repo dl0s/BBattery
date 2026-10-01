@@ -1,6 +1,7 @@
-param([string]$ReferenceRoot = 'C:/Users/dove1/Documents/BBFile')
+param([string]$ReferenceRoot = '')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+if (-not $ReferenceRoot) { $ReferenceRoot = Join-Path (Split-Path -Parent $root) 'BBFile' }
 $icons = Join-Path $root 'assets/icons'
 New-Item -ItemType Directory -Force -Path $icons | Out-Null
 $mapping = @{ 'refresh'='refresh'; 'settings'='settings'; 'save'='save'; 'close'='close'; 'history'='history'; 'info'='info'; 'charge'='next'; 'discharge'='previous'; 'previous'='previous'; 'next'='next' }

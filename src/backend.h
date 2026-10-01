@@ -15,6 +15,7 @@ class Backend:public QObject {
     Q_PROPERTY(QVariantMap detail READ detail NOTIFY detailChanged)
     Q_PROPERTY(QVariantMap history READ history NOTIFY chartsChanged)
     Q_PROPERTY(QVariantMap alerts READ alerts NOTIFY changed)
+    Q_PROPERTY(QVariantMap capacity READ capacity NOTIFY changed)
     Q_PROPERTY(bb::cascades::DataModel* sessions READ sessions CONSTANT)
     Q_PROPERTY(bb::cascades::DataModel* events READ events CONSTANT)
     Q_PROPERTY(int sessionCount READ sessionCount NOTIFY changed)
@@ -46,6 +47,7 @@ public:
     QVariantMap detail()const{return selected;}
     QVariantMap history()const{return historyStats;}
     QVariantMap alerts()const{return alertSettings;}
+    QVariantMap capacity()const{return capacityValues;}
     bb::cascades::DataModel *sessions()const{return records;}
     bb::cascades::DataModel *events()const{return eventRecords;}
     int sessionCount()const{return records->size();}
@@ -99,6 +101,9 @@ private:
     Battery::Store db;
     bb::cascades::ArrayDataModel *records,*eventRecords;
     QVariantMap current,assessment,selected,historyStats,alertSettings;
+    QVariantMap capacityValues;
+    qint64 capacitySessionId;
+    int capacityBatteryId;
     QVariantMap overviewLabels,socLabels,otherLabels,detailSocLabels,detailCurrentLabels;
     QVariantList points,detailPoints,markers;
     bb::cascades::Image overview,soc,other,detailSoc,detailCurrent;
@@ -123,7 +128,8 @@ private:
     QVariantMap inspectionResponse;
     void updateCharts();
     void updateRecords();
-    QVariantMap formatSession(const QVariantMap &row)const;
+    QVariantMap formatSession(const QVariantMap &row,bool capacityVerified=false)const;
+    void updateCapacity(const QVariantMap &sample);
     bb::cascades::Image chart(const QVariantList &rows,const QString &field,int height=228,
         const QString &save=QString(),QVariantMap *labels=0,qint64 begin=0,qint64 end=0,
         const QVariantList &events=QVariantList());

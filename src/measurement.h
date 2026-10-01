@@ -30,6 +30,9 @@ QString modeFor(const Sample &sample);
 Step integrate(const Sample &previous, const Sample &current);
 QVariant capacityEstimate(const QString &mode, double charge, double coverage,
                           int startSoc, int endSoc, bool closed, bool stableSoc);
+QVariant chargeCapacityEstimate(double charge,double coverage,int startSoc,int endSoc,bool closed,bool stableSoc);
+QVariant remainingCapacityEstimate(const QVariant &remaining,const QVariant &soc);
+QVariant healthCapacityEstimate(const QVariant &design,const QVariant &health);
 QString modeLabel(const QString &mode);
 bool selfTest(QString *report);
 bool connected(const QString &charger);

@@ -92,6 +92,7 @@ Backend::Backend():records(new bb::cascades::ArrayDataModel(this)),eventRecords(
     inspectionGeneration(0),inspectionLookupCount(0),inspectionBenchmarkLookups(0),
     inspectionPending(false),inspectionBusy(false),inspectionCacheValid(false){
     std::fputs("BBattery backend: initialize\n",stderr);std::fflush(stderr);
+    capacitySessionId=-1;capacityBatteryId=-1;
     directory=QDir::currentPath()+"/data/battery";channel="current";
     QDir().mkpath(directory);QDir().mkpath("data/diagnostics");
     QFile runtime("data/gui-identity.json");bb::data::JsonDataAccess json;
@@ -140,6 +141,7 @@ void Backend::refresh(){
     if(s.isEmpty()){message=QString::fromUtf8("等待首个采样");emit changed();return;}
     qint64 id=s["id"].toLongLong();
     current["socText"]=s["soc"].isNull()?"--":QString::number(s["soc"].toInt());
+    current["socAvailable"]=s["soc"].isValid()&&!s["soc"].isNull();
     current["currentText"]=metric(s["current"],0);
     current["voltageText"]=s["voltage"].isNull()?QString::fromUtf8("未提供"):QString::number(s["voltage"].toDouble()/1000.0,'f',3);
     current["temperatureText"]=metric(s["temperature"],1);
@@ -198,6 +200,7 @@ void Backend::refresh(){
     current["sessionDuration"]=activeFormatted.value("durationText",QString());
     current["sessionId"]=active.value("id",0);
     current["sessionActive"]=!active.isEmpty()&&fresh&&!isPaused;
+    updateCapacity(s);
     QVariantMap sign=first(db.query("SELECT SUM(ready=1 AND mode='discharge' AND current < -2) AS discharges,"
         "SUM(ready=1 AND mode='charge' AND current > 2) AS charges FROM samples"));
     bool dischargeVerified=sign["discharges"].toInt()>0,chargeVerified=sign["charges"].toInt()>0;
@@ -230,7 +233,33 @@ void Backend::refresh(){
     }
     emit changed();
 }
-QVariantMap Backend::formatSession(const QVariantMap &row)const{
+void Backend::updateCapacity(const QVariantMap &sample){
+    const bool ready=sample["ready"].toBool();
+    QVariant remaining=ready?Battery::remainingCapacityEstimate(sample["remaining"],sample["soc"]):QVariant();
+    QVariant health=ready?Battery::healthCapacityEstimate(sample["design"],sample["health"]):QVariant();
+    capacityValues["reportedText"]=sample["full_capacity"].isNull()?QString("--"):metric(sample["full_capacity"],0);
+    capacityValues["designText"]=sample["design"].isNull()?QString("--"):metric(sample["design"],0);
+    capacityValues["remainingText"]=remaining.isValid()?metric(remaining,0):QString("--");
+    capacityValues["healthText"]=health.isValid()?metric(health,0):QString("--");
+    capacityValues["remainingNote"]=remaining.isValid()?QString::fromUtf8("剩余电量 / SOC"):
+        !sample["soc"].isNull()&&sample["soc"].toDouble()<20?QString::fromUtf8("SOC 低于 20%"):QString::fromUtf8("缺少有效读数");
+    capacityValues["healthNote"]=health.isValid()?QString::fromUtf8("设计容量 × 健康度"):QString::fromUtf8("缺少有效读数");
+    const qint64 session=current["sessionId"].toLongLong();const int battery=sample["battery_id"].toInt();
+    if(session==capacitySessionId&&battery==capacityBatteryId)return;
+    capacitySessionId=session;capacityBatteryId=battery;
+    const char *modes[]={"discharge","charge"};
+    for(int i=0;i<2;++i){
+        QString mode=modes[i];QVariantMap row=db.capacitySession(mode,battery);
+        QVariantMap formatted=formatSession(row,true);
+        capacityValues[mode+"Text"]=formatted.value("estimateValue",QString("--"));
+        capacityValues[mode+"Ready"]=formatted.value("estimateReady",false);
+        capacityValues[mode+"Note"]=row.isEmpty()?QString::fromUtf8("待完整区间"):
+            QString::fromUtf8("%1 · %2% 跨度").arg(timeText(row["last_ms"].toLongLong(),"MM-dd"))
+            .arg(qAbs(row["start_soc"].toInt()-row["end_soc"].toInt()));
+        capacityValues[mode+"SessionId"]=row.value("id",0);
+    }
+}
+QVariantMap Backend::formatSession(const QVariantMap &row,bool capacityVerified)const{
     QVariantMap r=row;if(row.isEmpty())return r;
     QString mode=row["mode"].toString();bool closed=!row["end_ms"].isNull();
     double elapsed=row["elapsed_s"].toDouble(),coverage=elapsed>0?row["covered_s"].toDouble()/elapsed:0;
@@ -246,17 +275,23 @@ QVariantMap Backend::formatSession(const QVariantMap &row)const{
         elapsed>0?QString::number(coverage*100,'f',1)+"%":QString::fromUtf8("待积累");
     r["shortSummary"]=r["socText"].toString()+" · "+r["chargeText"].toString();
     r["description"]=r["shortSummary"].toString();
-    QVariant cap=Battery::capacityEstimate(mode,row["mah"].toDouble(),coverage,
+    QVariant cap=capacityVerified?Battery::capacityEstimate(mode,row["mah"].toDouble(),coverage,
+        row["start_soc"].isNull()?-1:row["start_soc"].toInt(),row["end_soc"].isNull()?-1:row["end_soc"].toInt(),
+        closed,row["stable_soc"].toBool()):QVariant();
+    if(mode=="charge"&&capacityVerified)cap=Battery::chargeCapacityEstimate(row["mah"].toDouble(),coverage,
         row["start_soc"].isNull()?-1:row["start_soc"].toInt(),row["end_soc"].isNull()?-1:row["end_soc"].toInt(),
         closed,row["stable_soc"].toBool());
+    r["estimateValue"]=cap.isValid()?metric(cap,0):QString("--");
+    r["estimateKind"]=QString::fromUtf8(mode=="charge"?"充电积分外推":"放电积分外推");
     r["estimateText"]=cap.isValid()?metric(cap,0," mAh"):QString::fromUtf8("条件不足");
     r["estimateReady"]=cap.isValid();
-    r["evaluation"]=cap.isValid()?QString::fromUtf8("区间外推值；不是完整容量实测"):
-        mode!="discharge"?QString::fromUtf8("此区间不是容量放电测试"):
-        !closed?QString::fromUtf8("区间尚未结束，不输出容量结论"):
-        !row["stable_soc"].toBool()?QString::fromUtf8("电量出现回跳，拒绝容量外推"):
-        coverage<0.95?QString::fromUtf8("有效积分覆盖不足 95%"):
-        QString::fromUtf8("有效电量跨度不足 30% 或无放电量");
+    r["evaluation"]=cap.isValid()?QString::fromUtf8("覆盖 %1% · 跨度 %2%").arg(coverage*100,0,'f',1)
+        .arg(qAbs(row["start_soc"].toInt()-row["end_soc"].toInt())):
+        mode!="discharge"&&mode!="charge"?QString::fromUtf8("无充放电积分"):
+        !closed?QString::fromUtf8("区间进行中"):
+        !row["stable_soc"].toBool()?QString::fromUtf8("SOC 回跳"):
+        coverage<0.95?QString::fromUtf8("覆盖不足 95%"):
+        QString::fromUtf8("数据条件不足");
     r["image"]="asset:///icons/"+QString(mode=="charge"?"charge":mode=="discharge"?"discharge":mode=="plugged"?"battery":"info")+".png";
     r["samplesText"]=QString::number(row["sample_count"].toInt());
     return r;
@@ -328,7 +363,7 @@ bb::cascades::Image Backend::chart(const QVariantList &rows,const QString &field
     qint64 begin,qint64 end,const QVariantList &events){
     ++chartRenderCount;
     const int width=720,left=76,right=20,top=28,bottom=38;
-    QImage bitmap(width,height,QImage::Format_ARGB32_Premultiplied);bitmap.fill(QColor("#151719").rgba());
+    QImage bitmap(width,height,QImage::Format_ARGB32_Premultiplied);bitmap.fill(QColor("#101820").rgba());
     QPainter p(&bitmap);p.setRenderHint(QPainter::Antialiasing);
     QRectF plot(left,top,width-left-right,height-top-bottom);
     if(!begin)begin=rows.isEmpty()?Battery::utcMillis()-60000:rows.first().toMap()["utc_ms"].toLongLong();
@@ -427,7 +462,9 @@ void Backend::filterSessions(const QString &mode){
 }
 void Backend::selectSession(qint64 id){
     QVariantMap row=first(db.query("SELECT * FROM sessions WHERE id=?",QVariantList()<<id));if(row.isEmpty())return;
-    detailId=id;selected=formatSession(row);
+    detailId=id;
+    const bool verified=!db.capacitySession(row["mode"].toString(),row["battery_id"].toInt(),id).isEmpty();
+    selected=formatSession(row,verified);
     QVariantMap stats;detailPoints=db.history(row["start_ms"].toLongLong(),row["last_ms"].toLongLong(),&stats,id);
     selected["currentMeanText"]=metric(stats["currentMean"],0," mA");
     selected["temperatureMaxText"]=metric(stats["temperatureMax"],1," C");
@@ -540,7 +577,9 @@ void Backend::exportData(bool selectedSession){
     if(s)sqlite3_finalize(s);stream.flush();ok=ok&&stream.status()==QTextStream::Ok;file.close();
     bb::data::JsonDataAccess json;QVariantMap summary;summary["generatedUtc"]=QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
     summary["current"]=current;summary["quality"]=assessment;summary["units"]="current=mA,voltage=mV,temperature=C,capacity=mAh,utc_ms=Unix UTC milliseconds";
-    summary["missingValues"]="Empty CSV fields are unavailable, not zero";summary["capacityMethod"]="Discharge interval extrapolation; not a full capacity measurement";
+    summary["missingValues"]="Empty CSV fields are unavailable, not zero";
+    summary["capacity"]=capacityValues;
+    summary["capacityMethod"]="Separate estimates: completed discharge/charge integrals, remaining mAh / SOC, design capacity * reported health; not calibrated full-capacity measurements";
     summary["selectedSession"]=selectedSession?selected:QVariantMap();summary["samplesFile"]=path;
     summary["viewedWindow"]=historyStats;
     summary["aggregationMethod"]="Time-weighted valid adjacent readings; raw-record extrema; gaps excluded; rendering decimation only";
@@ -573,6 +612,7 @@ void Backend::diagnostic(){
         response["layout"]=ignored;
     }else if(operation=="state"){
         refresh();response["live"]=current;response["quality"]=assessment;response["history"]=historyStats;
+        response["capacity"]=capacityValues;
         response["following"]=following();response["alerts"]=alertSettings;response["events"]=eventRecords->size();
         response["rows"]=records->size();response["inspection"]=pointText;response["socAxes"]=socLabels;
         response["inspectionCursor"]=inspectionCursor();response["chartRenders"]=chartRenderCount;

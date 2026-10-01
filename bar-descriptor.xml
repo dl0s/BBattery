@@ -13,6 +13,7 @@
     <asset path="assets/main.qml">assets/main.qml</asset>
     <asset path="assets/Metric.qml">assets/Metric.qml</asset>
     <asset path="assets/Chart.qml">assets/Chart.qml</asset>
+    <asset path="assets/BatteryGauge.qml">assets/BatteryGauge.qml</asset>
     <asset path="assets/icons">assets/icons</asset>
     <permission>access_shared</permission>
     <permission>run_when_backgrounded</permission>

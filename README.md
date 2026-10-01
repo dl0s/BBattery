@@ -18,8 +18,14 @@ python tools/device.py provision
 python tools/device.py boot-hook
 ```
 
-The existing pinned `Q10Manager/connection.json` profile is reused without
-changing credentials or host-key policy. ARM binaries use the established
+The build uses `INTROOP_SDK_ROOT` from the current process, falling back to the
+user environment variable if the terminal has not inherited it yet. The current
+SDK is `C:\bbdevtools`; pass `-SdkRoot` to override it. Icons are read from the
+neighbouring `BBFile` project, relative to this checkout.
+
+Deployment reuses `%LOCALAPPDATA%\Q10Manager\connection.json`, falling back to
+the existing `%LOCALAPPDATA%\Q10Deploy\config.json` profile when the former is
+absent, without changing credentials or host-key policy. ARM binaries use the established
 BB10 `gcc_ntoarmv7le_cpp` / `libcpp.so.4` runtime.
 
 ## Measurement Boundaries
@@ -34,6 +40,13 @@ BB10 `gcc_ntoarmv7le_cpp` / `libcpp.so.4` runtime.
 - Capacity extrapolation requires a completed discharge segment, at least 30
   percentage points of SOC, 95% integration coverage and stable SOC. It is not
   a calibrated full-capacity measurement.
+- Capacity estimates are shown separately for discharge integration, charge
+  integration, remaining mAh / SOC and design capacity × reported health.
+  Charge estimates use battery current, require a completed interval with the
+  same SOC-span/coverage guards, and validate SOC direction in legacy records.
+  Remaining/SOC estimates require SOC >= 20%. Reported full capacity and design
+  capacity remain distinct reference values. Missing inputs show `--`.
+  A session/id index keeps legacy SOC-direction checks bounded on long intervals.
 - The initial collector interval is 10 seconds; 5, 30 and 60 seconds are available.
 - History is stored in the app's private data directory, not in `/tmp`.
 - The GUI shows the latest 200 segments. CSV export includes the full history.
@@ -41,10 +54,12 @@ BB10 `gcc_ntoarmv7le_cpp` / `libcpp.so.4` runtime.
 
 ## Native History And UI
 
-The four screens are Overview, History, Records and Diagnostics. Overview
-keeps SOC, battery average current, temperature and the current process visible.
-Voltage, reported health/cycles, charger limits, source state, capacity
-extrapolation and detailed data-quality statistics live in Diagnostics.
+The four screens are Overview, History, Records and Diagnostics. Their title
+bars are removed and the compact two-column layout targets Q10. Overview keeps
+SOC, battery average current, temperature, charge/discharge capacity estimates
+and the current process visible.
+Voltage, reported health/cycles, charger limits, snapshot-based capacity
+estimates and detailed data-quality statistics live in Diagnostics.
 
 History supports 1/6/24 hours and rolling 7/30 days, previous/next windows,
 calendar browsing, curve visibility and synchronized inspection of raw samples.
@@ -81,6 +96,7 @@ root HTTP server, thermal spoofing, charging-control code or GPL assets were cop
 ## Tests
 
 ```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/test-capacity.ps1
 python tests/package_test.py
 python tests/device_tools_test.py
 python tests/device_test.py
@@ -100,8 +116,14 @@ Charts use QPainter only for geometry and images. Cascades labels render all
 chart text; QtGui font operations caused a startup segmentation fault on Q10.
 Deployment verifies GUI exit from individual `pidin` rows, not its table header,
 and prevents multiple GUI instances from racing over diagnostic requests.
-New collector executables are copied to unique immutable local paths before
-per-file execution trust is applied; no filesystem-wide trust policy is changed.
+Collector executables are read back before execution. Deployment can reuse an
+identical verified executable. If the device denies execution on a new inode,
+it can retain a retired BBattery executable's existing trust: the file must be
+root-only, match its recorded SHA256 and pass native self-tests, and must be
+absent from both the running processes and current supervisor. Its original
+bytes are backed up before replacement, with rollback on verification failure.
+The new executable is verified and renamed to a unique hash-qualified path
+before switching the running service. No filesystem-wide trust policy is changed.
 The supervisor removes only its verified empty private lock directory; it does
 not require the unavailable `rmdir` utility on the device.
 

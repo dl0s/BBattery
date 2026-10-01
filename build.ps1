@@ -1,10 +1,20 @@
-param([switch]$Package,[string]$SdkRoot='C:/Users/dove1/Documents/BBarmin/sdk')
+param([switch]$Package,[string]$SdkRoot='')
 $ErrorActionPreference='Stop'
+if (-not $SdkRoot) { $SdkRoot = $env:INTROOP_SDK_ROOT }
+if (-not $SdkRoot) { $SdkRoot = [Environment]::GetEnvironmentVariable('INTROOP_SDK_ROOT', 'User') }
+if (-not $SdkRoot) { throw 'Set INTROOP_SDK_ROOT or pass -SdkRoot to select the BB10 SDK.' }
+if (-not (Test-Path -LiteralPath $SdkRoot -PathType Container)) { throw "BB10 SDK directory not found: $SdkRoot" }
+$SdkRoot = (Resolve-Path -LiteralPath $SdkRoot).Path
+$hostRoot = Join-Path $SdkRoot 'host_10_3_1_12/win32/x86'
+$targetRoot = Join-Path $SdkRoot 'target_10_3_1_995/qnx6'
+if (-not (Test-Path -LiteralPath (Join-Path $hostRoot 'usr/bin/qcc.exe') -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $targetRoot -PathType Container)) { throw "Incomplete BB10 SDK: $SdkRoot" }
+Write-Output "BB10 SDK: $SdkRoot"
 $before = @{ Host=$env:QNX_HOST; Target=$env:QNX_TARGET; Path=$env:PATH }
 Push-Location $PSScriptRoot
 try {
-    $env:QNX_HOST = Join-Path $SdkRoot 'host_10_3_1_12/win32/x86'
-    $env:QNX_TARGET = Join-Path $SdkRoot 'target_10_3_1_995/qnx6'
+    $env:QNX_HOST = $hostRoot
+    $env:QNX_TARGET = $targetRoot
     $env:PATH = 'C:/bbndk/features/com.qnx.tools.jre.win32.x86_64_1.7.0.51/jre/bin;' + (Join-Path $env:QNX_HOST 'usr/bin') + ';' + $env:PATH
     New-Item -ItemType Directory -Force build | Out-Null
     & "$PSScriptRoot/tools/prepare-assets.ps1"

@@ -17,18 +17,21 @@ class PackageTest(unittest.TestCase):
     def test_bar_assets_and_identity(self):
         with zipfile.ZipFile(ROOT / "build/BBattery.bar") as bar:
             self.assertIn("Package-Name: top.blaccat.BBattery", bar.read("META-INF/MANIFEST.MF").decode())
-            for name in ("main.qml", "Metric.qml", "Chart.qml"):
+            for name in ("bbattery",):
+                self.assertEqual(bar.read("native/" + name), (ROOT / "build" / name).read_bytes())
+            for name in ("main.qml", "Metric.qml", "Chart.qml", "BatteryGauge.qml"):
                 self.assertIn("native/assets/" + name, bar.namelist())
+                self.assertEqual(bar.read("native/assets/" + name), (ROOT / "assets" / name).read_bytes())
             for name in bar.namelist():
                 self.assertNotIn("private", name.lower())
                 self.assertFalse(name.endswith((".pem", ".key", ".p12")))
             qml = bar.read("native/assets/main.qml").decode("utf-8")
             self.assertEqual(qml.count("    Tab {"), 4)
-            self.assertIn("系统自报健康度", qml)
+            self.assertIn("系统健康度", qml)
             self.assertIn("电池平均电流", qml)
-            self.assertIn("充放电记录", qml)
-            self.assertIn("数据诊断", qml)
-            self.assertIn("电池历史", qml)
+            self.assertNotIn("titleBar:", qml)
+            for source in ("放电积分", "充电积分", "余量 / SOC", "健康度折算", "系统满充", "设计容量"):
+                self.assertIn(source, qml)
             self.assertIn("时间范围", qml)
             self.assertIn("DateTimePicker", qml)
 
