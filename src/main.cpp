@@ -10,7 +10,8 @@
 #include <cstdio>
 
 int main(int argc,char **argv){
-    std::fputs("BBattery 0.1.0.5 startup\n",stderr);std::fflush(stderr);
+    const qint64 startup=Battery::monoMillis();
+    std::fputs("BBattery 0.1.0.7 startup\n",stderr);std::fflush(stderr);
     bb::cascades::Application app(argc,argv);
     std::fputs("BBattery application: ready\n",stderr);std::fflush(stderr);
     QTextCodec::setCodecForCStrings(QTextCodec::codecForName("UTF-8"));
@@ -23,6 +24,10 @@ int main(int argc,char **argv){
         bb::cascades::Page *page=new bb::cascades::Page;bb::cascades::Container *container=new bb::cascades::Container;
         bb::cascades::Label *label=new bb::cascades::Label;label->setText(QString::fromUtf8("BBattery 界面加载失败"));container->add(label);page->setContent(container);
         app.setScene(page);
-    }else{backend.setScene(pane);app.setScene(pane);std::fputs("BBattery 0.1.0.5 native scene ready\n",stderr);std::fflush(stderr);}
+    }else{
+        backend.setScene(pane);app.setScene(pane);
+        std::fputs("BBattery 0.1.0.7 native scene ready\n",stderr);
+        std::fprintf(stderr,"BBattery scene prepared: %lld ms\n",static_cast<long long>(Battery::monoMillis()-startup));std::fflush(stderr);
+    }
     return app.exec();
 }

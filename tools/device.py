@@ -108,8 +108,7 @@ def install():
     (BUILD / "install-evidence.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
     _, app, _ = receipt()
     with zipfile.ZipFile(bar) as archive:
-        for asset in ("native/bbattery", "native/assets/main.qml", "native/assets/Metric.qml",
-                      "native/assets/Chart.qml", "native/assets/BatteryGauge.qml"):
+        for asset in ("native/bbattery", "native/assets/main.qml", "native/assets/Metric.qml"):
             copy = BUILD / ("installed-" + asset.rsplit("/", 1)[1])
             scp(copy, app + "/" + asset, True)
             if copy.read_bytes() != archive.read(asset):
@@ -350,7 +349,7 @@ done
                            ssh("tail -n 20 /var/bbattery/service.log", check=False) +
                            ssh("tail -n 20 /var/bbattery/boot.log", check=False))
     evidence = dict(binary=remote, sha256=digest, data=directory, pid=int(pid), uid=int(uid), gid=int(gid),
-                    identity=identity, pathTrust=registration, samplesInterval=10,
+                    identity=identity, pathTrust=registration, samplesInterval=30, collectionMode="interval-tests-only",
                     rootPolicyChanged=False, existingFileServiceChanged=False, bootVerifiedAfterReboot=False)
     (BUILD / "collector-evidence.json").write_text(json.dumps(evidence, indent=2), encoding="utf-8")
     print("Independent collector started; effective UID " + uid, flush=True)

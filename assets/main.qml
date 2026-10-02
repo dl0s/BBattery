@@ -4,479 +4,235 @@ import QtQuick 1.0
 
 TabbedPane {
     id: root
-    objectName: "batteryTabs"
+    objectName: "batteryTests"
     showTabsOnActionBar: true
-    property bool showSoc: true
-    property bool showEvents: false
-    property int recordIndex: 0
-    property bool showQualityDetails: false
-    property bool interfaceReady: false
-    onCreationCompleted: interfaceReady = true
+    property bool rebuildingBatteries: false
+    property string batteryOptionsState: ""
+    function syncBatteries() {
+        rebuildingBatteries = true;
+        var items = backend.batteries;
+        var signature = JSON.stringify(items);
+        if (signature !== batteryOptionsState) {
+            batteryChoice.removeAll();
+            for (var i = 0; i < items.length; ++i) {
+                var option = batteryOption.createObject();
+                option.text = items[i].label;
+                option.value = items[i].key;
+                batteryChoice.add(option);
+            }
+            batteryOptionsState = signature;
+        }
+        for (var j = 0; j < items.length; ++j) {
+            if (items[j].key === backend.battery.viewedKey) batteryChoice.selectedIndex = j;
+        }
+        rebuildingBatteries = false;
+    }
     function testView(args) {
-        var tabs = [liveTab, trendTab, recordTab, qualityTab];
-        var index = Number(args.tab || 0);
-        if (index >= 0 && index < tabs.length) activeTab = tabs[index];
-        if (args.hours) backend.setWindow(Number(args.hours));
-        if (args.parameter) backend.setParameter(args.parameter);
-        if (args.move) backend.moveWindow(Number(args.move));
-        if (args.date) backend.browseDate(new Date(args.date));
-        if (args.follow === true) backend.followLatest();
-        if (args.showSoc !== undefined) showSoc = args.showSoc;
-        if (args.events !== undefined) recordIndex = args.events ? 3 : 0;
-        if (args.filter !== undefined) {
-            if (args.filter === "charge") recordIndex = 1;
-            else if (args.filter === "discharge") recordIndex = 2;
-            else if (!showEvents) recordIndex = 0;
-            backend.filterSessions(args.filter);
-        }
-        if (args.settings === true) settings.open();
-        if (args.display === true) displaySettings.open();
-        if (args.calendar === true) calendar.open();
-        if (args.session === true) sessionSheet.open();
-        if (args.diagnostics === true) detailDiagnostics.open();
-        if (args.qualityDetails !== undefined) showQualityDetails = args.qualityDetails;
-        if (args.scroll !== undefined) {
-            if (index === 1) historyScroll.scrollToPoint(0, Number(args.scroll), ScrollAnimation.None);
-            if (index === 3) diagnosisScroll.scrollToPoint(0, Number(args.scroll), ScrollAnimation.None);
-        }
-        if (args.close === true) { settings.close(); sessionSheet.close(); detailDiagnostics.close(); calendar.close(); displaySettings.close(); }
-        return { tab: index, width: overviewLayout.layoutFrame.width,
-            height: overviewLayout.layoutFrame.height, records: backend.sessionCount };
+        if (args.tab !== undefined) activeTab = Number(args.tab) === 1 ? resultsTab : testTab;
+        if (args.batteries === true) { syncBatteries(); batterySheet.open(); }
+        if (args.result === true) resultSheet.open();
+        if (args.close === true) { batterySheet.close(); resultSheet.close(); }
+        return { tab: activeTab === resultsTab ? 1 : 0, records: backend.resultCount };
     }
     Menu.definition: MenuDefinition {
-        settingsAction: SettingsActionItem { title: "采集与提醒"; imageSource: "asset:///icons/settings.png"; onTriggered: settings.open() }
-        actions: [ ActionItem { title: "导出全部记录"; imageSource: "asset:///icons/save.png"; onTriggered: backend.exportData(false) } ]
+        actions: [
+            ActionItem { title: "电池标记"; imageSource: "asset:///icons/battery.png"; onTriggered: { root.syncBatteries(); batterySheet.open(); } },
+            ActionItem { title: "导出全部原始数据"; imageSource: "asset:///icons/save.png"; onTriggered: backend.exportData(true) }
+        ]
     }
     Tab {
-        id: liveTab
-        title: "概览"
+        id: testTab
+        title: "测试"
         imageSource: "asset:///icons/battery.png"
         Page {
             ScrollView {
                 scrollViewProperties.scrollMode: ScrollMode.Vertical
                 Container {
-                    objectName: "overviewContent"
-                    background: Color.create("#101820")
-                    leftPadding: ui.du(1.5); rightPadding: ui.du(1.5); topPadding: ui.du(1); bottomPadding: ui.du(1.5)
-                    attachedObjects: [ LayoutUpdateHandler { id: overviewLayout } ]
+                    leftPadding: ui.du(1.5); rightPadding: ui.du(1.5)
+                    topPadding: ui.du(1.5); bottomPadding: ui.du(1)
+                    Label { text: "电池容量测试"; textStyle.fontSize: FontSize.Large; textStyle.fontWeight: FontWeight.W500 }
+                    Label {
+                        text: "当前电池 · " + (backend.battery.activeLabel || "电池 1")
+                        textStyle.color: Color.create("#93a4b2")
+                        textStyle.fontSize: FontSize.Small
+                    }
                     Container {
-                        layout: StackLayout { orientation: LayoutOrientation.LeftToRight }
+                        visible: !backend.running
+                        Label { text: "测试时长（分钟）"; textStyle.fontSize: FontSize.Small }
+                        TextField {
+                            id: minutes
+                            hintText: "测试时长（分钟，1–1440）"
+                            text: "60"
+                            inputMode: TextFieldInputMode.NumbersAndPunctuation
+                            enabled: !backend.pending
+                        }
+                        DropDown {
+                            id: intervalChoice
+                            title: "采样间隔"
+                            enabled: !backend.pending
+                            Option { text: "30 秒 · 省电"; value: 30; selected: true }
+                            Option { text: "10 秒 · 较细"; value: 10 }
+                            Option { text: "60 秒 · 较低负荷"; value: 60 }
+                        }
+                        Button {
+                            text: backend.pending ? "正在确认…" : "开始测试"
+                            horizontalAlignment: HorizontalAlignment.Fill
+                            enabled: backend.ready && !backend.pending && /^[0-9]+$/.test(minutes.text) && Number(minutes.text) >= 1 && Number(minutes.text) <= 1440
+                            onClicked: backend.startTest(Number(minutes.text), Number(intervalChoice.selectedValue))
+                        }
+                        Label {
+                            text: "开始时自动识别充电或放电。到时自动结束，关闭界面仍继续测试。"
+                            multiline: true
+                            textStyle.fontSize: FontSize.Small
+                            textStyle.color: Color.create("#93a4b2")
+                        }
+                    }
+                    Container {
+                        visible: backend.running
+                        Label {
+                            text: (backend.test.modeText || "测试中") + " · 剩余 " + (backend.test.remainingText || "--")
+                            textStyle.color: Color.create("#78c9ee")
+                        }
+                        Label {
+                            text: backend.test.mahText || "--"
+                            textStyle.fontSize: FontSize.XXLarge
+                            textStyle.fontWeight: FontWeight.W500
+                        }
+                        Label {
+                            text: "电量 " + (backend.test.socText || "--") + " · 已测 " + (backend.test.elapsedText || "--")
+                            textStyle.fontSize: FontSize.Small
+                        }
                         Container {
-                            preferredWidth: ui.du(0.7); minWidth: preferredWidth; maxWidth: preferredWidth
-                            preferredHeight: ui.du(0.7); minHeight: preferredHeight; maxHeight: preferredHeight
-                            verticalAlignment: VerticalAlignment.Center; rightMargin: ui.du(0.7)
-                            background: Color.create(backend.live.fresh && !backend.live.paused ? "#63d6a0" : "#efc56a")
+                            layout: StackLayout { orientation: LayoutOrientation.LeftToRight }
+                            Metric { label: "电池平均电流"; value: backend.live.currentText || "--" }
+                            Metric { label: "电池温度"; value: backend.live.temperatureText || "--" }
                         }
                         Label {
-                            objectName: "collectorStatus"
-                            text: backend.live.paused ? "已暂停" : backend.live.fresh ? "采集中" : "等待采集"
-                            textStyle.base: SystemDefaults.TextStyles.SmallText
+                            text: "采样更新 " + (backend.live.lastText || "--")
+                            textStyle.fontSize: FontSize.Small
                             textStyle.color: Color.create("#93a4b2")
-                            topMargin: 0; bottomMargin: 0
-                            layoutProperties: StackLayoutProperties { spaceQuota: 1 }
                         }
-                        Label { text: backend.live.lastText || ""; topMargin: 0; bottomMargin: 0; textStyle.base: SystemDefaults.TextStyles.SmallText; textStyle.color: Color.create("#748896") }
-                    }
-                    BatteryGauge {
-                        soc: backend.live.socText || "--"
-                        available: backend.live.socAvailable === true
-                        mode: backend.live.mode || "unknown"
-                        subtitle: backend.live.socAvailable !== true ? "等待数据" : !backend.live.fresh ? "历史读数" : backend.live.paused ? "已暂停" : backend.live.modeText || "状态未知"
-                    }
-                    Container {
-                        layout: StackLayout { orientation: LayoutOrientation.LeftToRight }
-                        Metric { label: "电池平均电流"; value: backend.live.currentText || "--"; unit: "mA"; accent: "#78c9ee" }
-                        Metric { label: "温度"; value: backend.live.temperatureText || "--"; unit: "°C" }
+                        Button {
+                            text: backend.pending ? "正在确认…" : "结束并保存"
+                            horizontalAlignment: HorizontalAlignment.Fill
+                            enabled: backend.ready && !backend.pending
+                            onClicked: backend.stopTest()
+                        }
                     }
                     Label {
-                        text: backend.live.alertText || ""
-                        visible: text !== ""
-                        textStyle.base: SystemDefaults.TextStyles.SmallText; textStyle.color: Color.create("#f09b87")
-                        multiline: true; bottomMargin: 0
-                    }
-                    Container {
-                        layout: StackLayout { orientation: LayoutOrientation.LeftToRight }
-                        Metric { label: "放电估算"; value: backend.capacity.dischargeText || "--"; unit: "mAh"; note: backend.capacity.dischargeNote || "待完整区间"; accent: "#78c9ee" }
-                        Metric { label: "充电估算"; value: backend.capacity.chargeText || "--"; unit: "mAh"; note: backend.capacity.chargeNote || "待完整区间"; accent: "#63d6a0" }
-                    }
-                    Chart { title: "近 1 小时"; plot: backend.overviewImage; axes: backend.overviewAxes; compact: true }
-                    Container {
-                        layout: StackLayout { orientation: LayoutOrientation.LeftToRight }
-                        Label {
-                            text: backend.live.sessionActive ? backend.live.sessionText : "暂无过程"
-                            textStyle.base: SystemDefaults.TextStyles.SmallText
-                            textStyle.color: Color.create("#93a4b2")
-                            layoutProperties: StackLayoutProperties { spaceQuota: 1 }
-                        }
-                        Label { text: backend.live.sessionActive ? backend.live.sessionDuration : ""; textStyle.base: SystemDefaults.TextStyles.SmallText; textStyle.color: Color.create("#93a4b2") }
+                        text: backend.status
+                        multiline: true
+                        textStyle.fontSize: FontSize.Small
+                        textStyle.color: Color.create("#93a4b2")
                     }
                 }
             }
-            shortcuts: [ Shortcut { key: "r"; onTriggered: backend.refresh() } ]
+            actions: [ ActionItem { title: "电池标记"; imageSource: "asset:///icons/battery.png"; ActionBar.placement: ActionBarPlacement.OnBar; onTriggered: { root.syncBatteries(); batterySheet.open(); } } ]
         }
     }
     Tab {
-        id: trendTab
-        title: "历史"
-        imageSource: "asset:///icons/trend.png"
-        Page {
-            ScrollView {
-                scrollViewProperties.scrollMode: ScrollMode.Vertical
-                id: historyScroll
-                Container {
-                    background: Color.create("#101820")
-                    leftPadding: ui.du(1.5); rightPadding: ui.du(1.5); topPadding: ui.du(0.5); bottomPadding: ui.du(2)
-                    DropDown {
-                        title: "时间范围"
-                        options: [
-                            Option { text: "1 小时"; value: 1; selected: backend.windowHours === 1 },
-                            Option { text: "6 小时"; value: 6; selected: backend.windowHours === 6 },
-                            Option { text: "24 小时"; value: 24; selected: backend.windowHours === 24 },
-                            Option { text: "7 天"; value: 168; selected: backend.windowHours === 168 },
-                            Option { text: "30 天"; value: 720; selected: backend.windowHours === 720 }
-                        ]
-                        onSelectedValueChanged: if (selectedValue) backend.setWindow(Number(selectedValue))
-                    }
-                    Container {
-                        layout: StackLayout { orientation: LayoutOrientation.LeftToRight }
-                        ImageButton {
-                            defaultImageSource: "asset:///icons/previous.png"; pressedImageSource: defaultImageSource
-                            preferredWidth: ui.du(5); minWidth: preferredWidth; maxWidth: preferredWidth
-                            preferredHeight: ui.du(5); minHeight: preferredHeight; maxHeight: preferredHeight
-                            accessibility.name: "上一段"
-                            onClicked: backend.moveWindow(-1)
-                        }
-                        Label {
-                            text: backend.following ? "实时" : "历史"
-                            textStyle.base: SystemDefaults.TextStyles.SmallText
-                            textStyle.color: Color.create(backend.following ? "#63d6a0" : "#b1b6bc")
-                            verticalAlignment: VerticalAlignment.Center
-                            layoutProperties: StackLayoutProperties { spaceQuota: 1 }
-                        }
-                        ImageButton {
-                            defaultImageSource: "asset:///icons/history.png"; pressedImageSource: defaultImageSource
-                            preferredWidth: ui.du(5); minWidth: preferredWidth; maxWidth: preferredWidth
-                            preferredHeight: ui.du(5); minHeight: preferredHeight; maxHeight: preferredHeight
-                            accessibility.name: "选择日期"
-                            onClicked: calendar.open()
-                        }
-                        ImageButton {
-                            defaultImageSource: "asset:///icons/refresh.png"; pressedImageSource: defaultImageSource
-                            preferredWidth: ui.du(5); minWidth: preferredWidth; maxWidth: preferredWidth
-                            preferredHeight: ui.du(5); minHeight: preferredHeight; maxHeight: preferredHeight
-                            accessibility.name: "回到实时"
-                            onClicked: backend.followLatest()
-                        }
-                        ImageButton {
-                            defaultImageSource: "asset:///icons/settings.png"; pressedImageSource: defaultImageSource
-                            preferredWidth: ui.du(5); minWidth: preferredWidth; maxWidth: preferredWidth
-                            preferredHeight: ui.du(5); minHeight: preferredHeight; maxHeight: preferredHeight
-                            accessibility.name: "曲线"
-                            onClicked: displaySettings.open()
-                        }
-                        ImageButton {
-                            defaultImageSource: "asset:///icons/next.png"; pressedImageSource: defaultImageSource
-                            disabledImageSource: defaultImageSource; enabled: !backend.following
-                            opacity: enabled ? 1 : 0.3
-                            preferredWidth: ui.du(5); minWidth: preferredWidth; maxWidth: preferredWidth
-                            preferredHeight: ui.du(5); minHeight: preferredHeight; maxHeight: preferredHeight
-                            accessibility.name: "下一段"
-                            onClicked: backend.moveWindow(1)
-                        }
-                    }
-                    Label {
-                        text: backend.history.rangeText || ""
-                        textStyle.base: SystemDefaults.TextStyles.SmallText; textStyle.color: Color.create("#93a4b2")
-                        topMargin: ui.du(0.5); bottomMargin: 0
-                    }
-                    Container {
-                        layout: StackLayout { orientation: LayoutOrientation.LeftToRight }
-                        Label { text: "充电"; textStyle.color: Color.create("#63d6a0"); textStyle.base: SystemDefaults.TextStyles.SmallText; rightMargin: ui.du(2) }
-                        Label { text: "放电"; textStyle.color: Color.create("#78c9ee"); textStyle.base: SystemDefaults.TextStyles.SmallText; rightMargin: ui.du(2) }
-                        Label { text: "接电静置"; textStyle.color: Color.create("#efc56a"); textStyle.base: SystemDefaults.TextStyles.SmallText }
-                    }
-                    Label {
-                        text: backend.inspection
-                        preferredHeight: ui.du(6); minHeight: preferredHeight; maxHeight: preferredHeight
-                        multiline: true; autoSize.maxLineCount: 2
-                        textStyle.base: SystemDefaults.TextStyles.SmallText
-                        textStyle.color: Color.create("#f1f3f4")
-                        bottomMargin: 0
-                    }
-                    Chart { title: "电量 · %"; plot: backend.socImage; axes: backend.socAxes; cursor: backend.inspectionCursor; inspectable: true; visible: root.showSoc }
-                    Chart {
-                        visible: backend.parameter !== "none"
-                        title: backend.parameter === "current" ? "电池平均电流 · mA" : backend.parameter === "voltage" ? "电压 · V" : "温度 · °C"
-                        plot: backend.parameterImage; axes: backend.parameterAxes; cursor: backend.inspectionCursor; inspectable: true
-                    }
-                    Divider {}
-                    Label { text: "区间汇总"; textStyle.fontSize: FontSize.Medium; bottomMargin: 0 }
-                    Container {
-                        layout: StackLayout { orientation: LayoutOrientation.LeftToRight }
-                        Metric { label: "累计充入"; value: backend.history.chargeText || "未提供"; accent: "#63d6a0" }
-                        Metric { label: "累计放出"; value: backend.history.dischargeText || "未提供"; accent: "#78c9ee" }
-                    }
-                    Label { text: backend.history.summaryText || ""; multiline: true; textStyle.base: SystemDefaults.TextStyles.SmallText; textStyle.color: Color.create("#93a4b2") }
-                }
-            }
-        }
-    }
-    Tab {
-        id: recordTab
-        title: "记录"
-        imageSource: "asset:///icons/history.png"
+        id: resultsTab
+        title: "结果"
+        imageSource: "asset:///icons/save.png"
         Page {
             Container {
-                background: Color.create("#101820")
-                leftPadding: ui.du(1); rightPadding: ui.du(1); topPadding: ui.du(1); bottomPadding: ui.du(1)
-                SegmentedControl {
-                    selectedIndex: root.recordIndex
-                    options: [ Option { text: "全部" }, Option { text: "充电" }, Option { text: "放电" }, Option { text: "事件" } ]
-                    onSelectedIndexChanged: if (selectedIndex >= 0) {
-                        root.recordIndex = selectedIndex;
-                        root.showEvents = selectedIndex === 3;
-                        if (!root.showEvents) backend.filterSessions(selectedIndex === 1 ? "charge" : selectedIndex === 2 ? "discharge" : "");
-                    }
-                }
+                leftPadding: ui.du(1); rightPadding: ui.du(1); topPadding: ui.du(1)
+                Label { text: (backend.battery.viewedLabel || "电池 1") + " · 测试结果"; textStyle.fontSize: FontSize.Large }
                 Label {
-                    visible: root.showEvents ? backend.eventCount === 0 : backend.sessionCount === 0
-                    text: root.showEvents ? "暂无事件与提醒" : "暂无充放电记录"
+                    visible: backend.resultCount === 0
+                    text: "暂无测试结果。选择电池后开始一次定时测试；旧原始记录可从菜单导出。"
+                    multiline: true
+                    textStyle.fontSize: FontSize.Small
                     textStyle.color: Color.create("#93a4b2")
-                    horizontalAlignment: HorizontalAlignment.Center; topMargin: ui.du(4)
                 }
                 ListView {
-                    objectName: "sessionList"
-                    visible: !root.showEvents
-                    dataModel: backend.sessions
+                    id: resultList
+                    dataModel: backend.results
                     layoutProperties: StackLayoutProperties { spaceQuota: 1 }
                     listItemComponents: [ ListItemComponent {
                         type: ""
-                        StandardListItem { title: ListItemData.title; description: ListItemData.description; status: ListItemData.status; imageSource: ListItemData.image }
+                        StandardListItem { title: ListItemData.title; description: ListItemData.subtitle; status: ListItemData.socText }
                     } ]
-                    onTriggered: { backend.selectSession(dataModel.data(indexPath).id); sessionSheet.open(); }
+                    onTriggered: { backend.selectTest(dataModel.data(indexPath).id); resultSheet.open(); }
                 }
-                ListView {
-                    visible: root.showEvents
-                    dataModel: backend.events
-                    layoutProperties: StackLayoutProperties { spaceQuota: 1 }
-                    listItemComponents: [ ListItemComponent {
-                        type: ""
-                        StandardListItem { title: ListItemData.title; description: ListItemData.description; imageSource: ListItemData.image }
-                    } ]
-                }
+                Button { text: "加载更早结果"; visible: backend.hasMore; onClicked: backend.loadMore() }
             }
-        }
-    }
-    Tab {
-        id: qualityTab
-        title: "诊断"
-        imageSource: "asset:///icons/info.png"
-        Page {
-            ScrollView {
-                scrollViewProperties.scrollMode: ScrollMode.Vertical
-                id: diagnosisScroll
-                Container {
-                    background: Color.create("#101820")
-                    leftPadding: ui.du(1.5); rightPadding: ui.du(1.5); topPadding: ui.du(1); bottomPadding: ui.du(2)
-                    Label {
-                        text: backend.live.paused ? "采集已暂停" : !backend.live.fresh ? "采集离线" : "数据未就绪"
-                        visible: backend.live.paused || !backend.live.fresh || !backend.live.ready
-                        textStyle.base: SystemDefaults.TextStyles.SmallText; textStyle.color: Color.create("#efc56a")
-                    }
-                    Label { text: "容量预估 · mAh"; textStyle.fontSize: FontSize.Medium; bottomMargin: ui.du(0.5) }
-                    Container {
-                        layout: StackLayout { orientation: LayoutOrientation.LeftToRight }
-                        Metric { label: "放电积分"; value: backend.capacity.dischargeText || "--"; note: backend.capacity.dischargeNote || "待完整区间"; accent: "#78c9ee" }
-                        Metric { label: "充电积分"; value: backend.capacity.chargeText || "--"; note: backend.capacity.chargeNote || "待完整区间"; accent: "#63d6a0" }
-                    }
-                    Container {
-                        layout: StackLayout { orientation: LayoutOrientation.LeftToRight }
-                        Metric { label: "余量 / SOC"; value: backend.capacity.remainingText || "--"; note: backend.capacity.remainingNote || "缺少有效读数"; accent: "#b5a4ec" }
-                        Metric { label: "健康度折算"; value: backend.capacity.healthText || "--"; note: backend.capacity.healthNote || "缺少有效读数"; accent: "#b5a4ec" }
-                    }
-                    Container {
-                        layout: StackLayout { orientation: LayoutOrientation.LeftToRight }
-                        Metric { label: "系统满充"; value: backend.capacity.reportedText || "--"; note: "系统读数" }
-                        Metric { label: "设计容量"; value: backend.capacity.designText || "--"; note: "设计参考" }
-                    }
-                    Label { text: "实时参数"; textStyle.fontSize: FontSize.Medium; topMargin: ui.du(1); bottomMargin: ui.du(0.5) }
-                    Container {
-                        layout: StackLayout { orientation: LayoutOrientation.LeftToRight }
-                        Metric { label: "电压"; value: backend.live.voltageText || "--"; unit: "V" }
-                        Metric { label: "剩余电量"; value: backend.live.remainingText || "--" }
-                    }
-                    Container {
-                        layout: StackLayout { orientation: LayoutOrientation.LeftToRight }
-                        Metric { label: "系统健康度"; value: backend.live.healthText || "--" }
-                        Metric { label: "循环次数"; value: backend.live.cyclesText || "--" }
-                    }
-                    Label { text: "电源"; textStyle.fontSize: FontSize.Medium; topMargin: ui.du(1); bottomMargin: ui.du(0.5) }
-                    Container {
-                        layout: StackLayout { orientation: LayoutOrientation.LeftToRight }
-                        Metric { label: "输入电流"; value: backend.live.inputText || "--" }
-                        Metric { label: "系统充电电流"; value: backend.live.systemChargeText || "--" }
-                    }
-                    Container {
-                        layout: StackLayout { orientation: LayoutOrientation.LeftToRight }
-                        Metric { label: "输入限值"; value: backend.live.inputLimitText || "--" }
-                        Metric { label: "充电限值"; value: backend.live.chargeLimitText || "--" }
-                    }
-                    Container {
-                        layout: StackLayout { orientation: LayoutOrientation.LeftToRight }
-                        Metric { label: "预计耗尽"; value: backend.live.timeToEmptyText || "--" }
-                        Metric { label: "预计充满"; value: backend.live.timeToFullText || "--" }
-                    }
-                    Button {
-                        text: root.showQualityDetails ? "收起采集详情" : "采集详情"
-                        horizontalAlignment: HorizontalAlignment.Fill
-                        onClicked: root.showQualityDetails = !root.showQualityDetails
-                    }
-                    Container {
-                        visible: root.showQualityDetails
-                        Label { text: backend.quality.historyText || ""; textStyle.base: SystemDefaults.TextStyles.SmallText }
-                        Label { text: "有效读数  电流 " + (backend.quality.currentCoverage || 0) + "% · 电压 " + (backend.quality.voltageCoverage || 0) + "% · 温度 " + (backend.quality.temperatureCoverage || 0) + "%"; multiline: true; textStyle.base: SystemDefaults.TextStyles.SmallText; textStyle.color: Color.create("#93a4b2") }
-                        Label { text: backend.quality.missingText || ""; multiline: true; textStyle.base: SystemDefaults.TextStyles.SmallText; textStyle.color: Color.create("#93a4b2") }
-                        Label { text: backend.status; multiline: true; textStyle.base: SystemDefaults.TextStyles.SmallText }
-                        Label { text: "最近采样  " + (backend.live.sampleAge || "--") + "前 · " + (backend.quality.storageText || "--"); textStyle.base: SystemDefaults.TextStyles.SmallText; textStyle.color: Color.create("#93a4b2") }
-                        Label { text: backend.quality.period || ""; textStyle.base: SystemDefaults.TextStyles.SmallText; textStyle.color: Color.create("#748896") }
-                    }
-                }
-            }
+            actions: [ ActionItem { title: "选择电池"; imageSource: "asset:///icons/battery.png"; ActionBar.placement: ActionBarPlacement.OnBar; onTriggered: { root.syncBatteries(); batterySheet.open(); } } ]
         }
     }
     attachedObjects: [
         SystemToast { id: toast },
+        ComponentDefinition { id: batteryOption; Option {} },
+        Connections {
+            target: backend
+            onBatteriesChanged: root.syncBatteries()
+            onNotified: { toast.body = message; toast.show(); }
+        },
         Sheet {
-            id: settings
+            id: batterySheet
             Page {
+                titleBar: TitleBar { title: "电池标记"; dismissAction: ActionItem { title: "完成"; onTriggered: batterySheet.close() } }
                 ScrollView {
-                scrollViewProperties.scrollMode: ScrollMode.Vertical
+                    scrollViewProperties.scrollMode: ScrollMode.Vertical
                     Container {
-                        background: Color.create("#101820"); leftPadding: ui.du(1.5); rightPadding: ui.du(1.5); topPadding: ui.du(1); bottomPadding: ui.du(2)
-                        Container {
-                            layout: StackLayout { orientation: LayoutOrientation.LeftToRight }
-                            Label { text: "持续采集"; verticalAlignment: VerticalAlignment.Center; layoutProperties: StackLayoutProperties { spaceQuota: 1 } }
-                            ToggleButton { checked: !backend.paused; onCheckedChanged: if (root.interfaceReady && checked === backend.paused) backend.configure(backend.interval, !checked) }
-                        }
+                        leftPadding: ui.du(1.5); rightPadding: ui.du(1.5); topPadding: ui.du(1)
+                        Label { text: "当前 · " + (backend.battery.activeLabel || "电池 1") }
                         DropDown {
-                            title: "采样间隔"
-                            options: [
-                                Option { text: "5 秒"; value: 5; selected: backend.interval === 5 },
-                                Option { text: "10 秒"; value: 10; selected: backend.interval === 10 },
-                                Option { text: "30 秒"; value: 30; selected: backend.interval === 30 },
-                                Option { text: "60 秒"; value: 60; selected: backend.interval === 60 }
-                            ]
-                            onSelectedValueChanged: if (root.interfaceReady && selectedValue && Number(selectedValue) !== backend.interval) backend.configure(Number(selectedValue), backend.paused)
+                            id: batteryChoice
+                            title: "选择已有电池"
+                            onSelectedValueChanged: if (!root.rebuildingBatteries && selectedValue) backend.viewBattery(String(selectedValue))
                         }
-                        Divider {}
                         Container {
                             layout: StackLayout { orientation: LayoutOrientation.LeftToRight }
-                            Label { text: "电池提醒"; verticalAlignment: VerticalAlignment.Center; layoutProperties: StackLayoutProperties { spaceQuota: 1 } }
-                            ToggleButton {
-                                checked: backend.alerts.enabled === true
-                                onCheckedChanged: if (root.interfaceReady && checked !== backend.alerts.enabled) backend.configureAlerts(checked, Number(backend.alerts.low), Number(backend.alerts.high), Number(backend.alerts.temperature))
-                            }
+                            Button { text: "设为当前电池"; enabled: !backend.running && !backend.pending; layoutProperties: StackLayoutProperties { spaceQuota: 1 } onClicked: backend.useBattery(String(batteryChoice.selectedValue)) }
+                            Button { text: "查看结果"; layoutProperties: StackLayoutProperties { spaceQuota: 1 } onClicked: { backend.viewBattery(String(batteryChoice.selectedValue)); root.activeTab = resultsTab; batterySheet.close(); } }
                         }
-                        Label { text: "低电量  " + Math.round(lowSlider.immediateValue) + "%"; textStyle.base: SystemDefaults.TextStyles.SmallText }
-                        Slider {
-                            id: lowSlider
-                            fromValue: 5; toValue: 40; value: Number(backend.alerts.low || 20); enabled: backend.alerts.enabled === true
-                            onValueChanged: if (root.interfaceReady && Math.round(value) !== Number(backend.alerts.low)) backend.configureAlerts(backend.alerts.enabled, Math.round(value), Number(backend.alerts.high), Number(backend.alerts.temperature))
+                        Label {
+                            text: "每块电池使用一个标记。重新装回电池时，选择原有标记即可保留同一电池的测试记录。"
+                            multiline: true
+                            textStyle.fontSize: FontSize.Small
+                            textStyle.color: Color.create("#93a4b2")
                         }
-                        Label { text: "充电电量  " + Math.round(highSlider.immediateValue) + "%"; textStyle.base: SystemDefaults.TextStyles.SmallText }
-                        Slider {
-                            id: highSlider
-                            fromValue: 60; toValue: 100; value: Number(backend.alerts.high || 90); enabled: backend.alerts.enabled === true
-                            onValueChanged: if (root.interfaceReady && Math.round(value) !== Number(backend.alerts.high)) backend.configureAlerts(backend.alerts.enabled, Number(backend.alerts.low), Math.round(value), Number(backend.alerts.temperature))
+                        TextField { id: batteryName; hintText: "新标记或新名称（1–40 字）"; maximumLength: 40 }
+                        Container {
+                            layout: StackLayout { orientation: LayoutOrientation.LeftToRight }
+                            Button { text: "新增标记"; layoutProperties: StackLayoutProperties { spaceQuota: 1 } onClicked: { var key = backend.createBattery(batteryName.text); if (key) batteryName.text = ""; } }
+                            Button { text: "重命名"; layoutProperties: StackLayoutProperties { spaceQuota: 1 } onClicked: { if (backend.renameBattery(String(batteryChoice.selectedValue), batteryName.text)) batteryName.text = ""; } }
                         }
-                        Label { text: "温度  " + Math.round(tempSlider.immediateValue) + "°C"; textStyle.base: SystemDefaults.TextStyles.SmallText }
-                        Slider {
-                            id: tempSlider
-                            fromValue: 35; toValue: 55; value: Number(backend.alerts.temperature || 45); enabled: backend.alerts.enabled === true
-                            onValueChanged: if (root.interfaceReady && Math.round(value) !== Number(backend.alerts.temperature)) backend.configureAlerts(backend.alerts.enabled, Number(backend.alerts.low), Number(backend.alerts.high), Math.round(value))
-                        }
-                        Label { text: backend.status; multiline: true; textStyle.base: SystemDefaults.TextStyles.SmallText; textStyle.color: Color.create("#93a4b2") }
                     }
                 }
-                actions: [ ActionItem { title: "完成"; imageSource: "asset:///icons/close.png"; ActionBar.placement: ActionBarPlacement.OnBar; onTriggered: settings.close() } ]
             }
         },
         Sheet {
-            id: displaySettings
+            id: resultSheet
             Page {
-                Container {
-                    background: Color.create("#101820"); leftPadding: ui.du(1.5); rightPadding: ui.du(1.5); topPadding: ui.du(1.5)
-                    CheckBox { text: "电量曲线"; checked: root.showSoc; onCheckedChanged: root.showSoc = checked }
-                    DropDown {
-                        title: "参数曲线"
-                        options: [
-                            Option { text: "电池平均电流"; value: "current"; selected: backend.parameter === "current" },
-                            Option { text: "电压"; value: "voltage"; selected: backend.parameter === "voltage" },
-                            Option { text: "温度"; value: "temperature"; selected: backend.parameter === "temperature" },
-                            Option { text: "隐藏"; value: "none"; selected: backend.parameter === "none" }
-                        ]
-                        onSelectedValueChanged: if (selectedValue) backend.setParameter(selectedValue)
-                    }
-                }
-                actions: [ ActionItem { title: "完成"; imageSource: "asset:///icons/close.png"; ActionBar.placement: ActionBarPlacement.OnBar; onTriggered: displaySettings.close() } ]
-            }
-        },
-        Sheet {
-            id: calendar
-            Page {
-                Container {
-                    background: Color.create("#101820"); leftPadding: ui.du(1.5); rightPadding: ui.du(1.5); topPadding: ui.du(1.5)
-                    DateTimePicker { id: historyDate; title: "截止日期"; mode: DateTimePickerMode.Date; value: backend.historyDate; maximum: new Date(); expanded: true }
-                }
-                actions: [
-                    ActionItem { title: "查看"; imageSource: "asset:///icons/history.png"; ActionBar.placement: ActionBarPlacement.OnBar; onTriggered: { backend.browseDate(historyDate.value); calendar.close(); } },
-                    ActionItem { title: "取消"; imageSource: "asset:///icons/close.png"; ActionBar.placement: ActionBarPlacement.OnBar; onTriggered: calendar.close() }
-                ]
-            }
-        },
-        Sheet {
-            id: sessionSheet
-            Page {
+                titleBar: TitleBar { title: "测试结果"; dismissAction: ActionItem { title: "完成"; onTriggered: resultSheet.close() } }
                 ScrollView {
-                scrollViewProperties.scrollMode: ScrollMode.Vertical
+                    scrollViewProperties.scrollMode: ScrollMode.Vertical
                     Container {
-                        background: Color.create("#101820"); leftPadding: ui.du(1.5); rightPadding: ui.du(1.5); topPadding: ui.du(1); bottomPadding: ui.du(2)
-                        Label { text: backend.detail.timeText || ""; multiline: true; textStyle.base: SystemDefaults.TextStyles.SmallText; textStyle.color: Color.create("#93a4b2") }
-                        Label { text: backend.detail.socText || ""; textStyle.fontSize: FontSize.Large }
-                        Label { text: backend.detail.durationText || ""; textStyle.base: SystemDefaults.TextStyles.SmallText }
+                        leftPadding: ui.du(1.5); rightPadding: ui.du(1.5); topPadding: ui.du(1); bottomPadding: ui.du(1)
+                        Label { text: (backend.detail.battery_label || "") + " · " + (backend.detail.stateText || "读取中"); textStyle.fontSize: FontSize.Large }
+                        Label { text: backend.detail.mahText || "--"; textStyle.fontSize: FontSize.XLarge }
+                        Label { text: backend.detail.modeText || ""; textStyle.color: Color.create("#93a4b2") }
+                        Label { text: "开始  " + (backend.detail.startText || "--"); textStyle.fontSize: FontSize.Small }
+                        Label { text: "结束  " + (backend.detail.endText || "--"); textStyle.fontSize: FontSize.Small }
                         Container {
                             layout: StackLayout { orientation: LayoutOrientation.LeftToRight }
-                            Metric { label: "累计电量"; value: backend.detail.chargeText || "--" }
-                            Metric { label: backend.detail.estimateKind || "容量外推"; value: backend.detail.estimateValue || "--"; unit: "mAh"; accent: "#78c9ee" }
+                            Metric { label: "测试时长"; value: backend.detail.elapsedText || "--" }
+                            Metric { label: "电量变化"; value: backend.detail.socText || "--" }
                         }
-                        Chart { title: "电量 · %"; plot: backend.detailSocImage; axes: backend.detailSocAxes }
-                        Chart { title: "电池平均电流 · mA"; plot: backend.detailCurrentImage; axes: backend.detailCurrentAxes }
+                        Container {
+                            layout: StackLayout { orientation: LayoutOrientation.LeftToRight }
+                            Metric { label: "电能"; value: backend.detail.mwhText || "--" }
+                            Metric { label: "电流积分覆盖"; value: backend.detail.coverageText || "--" }
+                        }
+                        Label { text: "整电池容量估计  " + (backend.detail.capacityText || "--"); textStyle.fontSize: FontSize.Small }
+                        Label { text: backend.detail.estimateNote || ""; multiline: true; textStyle.fontSize: FontSize.Small; textStyle.color: Color.create("#93a4b2") }
+                        Label { text: backend.detail.reasonText || ""; textStyle.fontSize: FontSize.Small }
+                        Button { text: "导出本次数据"; enabled: !!backend.detail.id && backend.detail.status !== "running"; onClicked: backend.exportData(false) }
                     }
                 }
-                actions: [
-                    ActionItem { title: "关闭"; imageSource: "asset:///icons/close.png"; ActionBar.placement: ActionBarPlacement.OnBar; onTriggered: sessionSheet.close() },
-                    ActionItem { title: "诊断"; imageSource: "asset:///icons/info.png"; ActionBar.placement: ActionBarPlacement.OnBar; onTriggered: detailDiagnostics.open() },
-                    ActionItem { title: "导出"; imageSource: "asset:///icons/save.png"; ActionBar.placement: ActionBarPlacement.OnBar; onTriggered: backend.exportData(true) }
-                ]
             }
-        },
-        Sheet {
-            id: detailDiagnostics
-            Page {
-                Container {
-                    background: Color.create("#101820"); leftPadding: ui.du(1.5); rightPadding: ui.du(1.5); topPadding: ui.du(1.5)
-                    Metric { label: backend.detail.estimateKind || "容量外推"; value: backend.detail.estimateValue || "--"; unit: "mAh"; accent: "#78c9ee" }
-                    Label { text: backend.detail.evaluation || ""; multiline: true; textStyle.base: SystemDefaults.TextStyles.SmallText; textStyle.color: Color.create("#efc56a") }
-                    Divider {}
-                    Label { text: "累计能量  " + (backend.detail.energyText || "未提供"); textStyle.base: SystemDefaults.TextStyles.SmallText }
-                    Label { text: "电流时间均值  " + (backend.detail.currentMeanText || "未提供"); textStyle.base: SystemDefaults.TextStyles.SmallText }
-                    Label { text: "最高温度  " + (backend.detail.temperatureMaxText || "未提供"); textStyle.base: SystemDefaults.TextStyles.SmallText }
-                    Label { text: "采样数  " + (backend.detail.samplesText || "0"); textStyle.base: SystemDefaults.TextStyles.SmallText }
-                    Label { text: "积分覆盖  " + (backend.detail.coverageText || "--"); textStyle.base: SystemDefaults.TextStyles.SmallText }
-                }
-                actions: [ ActionItem { title: "关闭"; imageSource: "asset:///icons/close.png"; ActionBar.placement: ActionBarPlacement.OnBar; onTriggered: detailDiagnostics.close() } ]
-            }
-        },
-        Connections { target: backend; onExported: { toast.body = message; toast.show(); } onAlerted: { toast.body = message; toast.show(); } }
+        }
     ]
 }

@@ -1,11 +1,21 @@
 #include "../src/capacity.h"
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 
 int main(int argc,char **argv){
-    if(argc==2&&std::strcmp(argv[1],"--sql")==0){std::puts(Battery::Capacity::historySql());return 0;}
+    if(argc==2&&std::strcmp(argv[1],"--sql")==0){std::puts(Battery::Capacity::historySql().c_str());return 0;}
+    if(argc==2&&std::strcmp(argv[1],"--profile-sql")==0){std::puts(Battery::Capacity::historySql(true).c_str());return 0;}
+    if(argc==2&&std::strcmp(argv[1],"--candidate-sql")==0){std::puts(Battery::Capacity::historySql(false,false).c_str());return 0;}
+    if(argc==2&&std::strcmp(argv[1],"--profile-candidate-sql")==0){std::puts(Battery::Capacity::historySql(true,false).c_str());return 0;}
+    if(argc>=3&&std::strcmp(argv[1],"--soc-sequence")==0){
+        Battery::Capacity::SocSequence sequence(std::strcmp(argv[2],"charge")==0);
+        if(argc==3){char token[64];while(std::scanf("%63s",token)==1)if(std::strcmp(token,"null")!=0)sequence.add(std::strtod(token,0));}
+        else for(int i=3;i<argc;++i)if(std::strcmp(argv[i],"null")!=0)sequence.add(std::strtod(argv[i],0));
+        std::puts(sequence.valid()?"valid":"invalid");return 0;
+    }
     int failed=0,total=0;double value=-1;
 #define CHECK(name,condition) do { ++total; if(!(condition)){++failed;std::printf("FAIL: %s\n",name);} } while(0)
     using namespace Battery::Capacity;
@@ -39,6 +49,14 @@ int main(int argc,char **argv){
     CHECK("charge SOC reversal",!followsSoc(true,40,37));
     CHECK("discharge SOC jitter",followsSoc(false,40,42));
     CHECK("discharge SOC reversal",!followsSoc(false,40,43));
+    SocSequence monotonic(true);monotonic.add(20);monotonic.add(40);monotonic.add(38);monotonic.add(80);
+    CHECK("linear SOC validation allows bounded jitter",monotonic.valid());
+    SocSequence reversal(true);reversal.add(20);reversal.add(60);reversal.add(40);reversal.add(80);
+    CHECK("linear SOC validation rejects legacy charging reversal",!reversal.valid());
+    SocSequence fractional(false);fractional.add(90);fractional.add(40.1);fractional.add(42.2);fractional.add(30);
+    CHECK("linear SOC validation preserves fractional reversal threshold",!fractional.valid());
+    SocSequence missing(false);
+    CHECK("no SOC records cannot verify capacity",!missing.valid());
     std::printf("Capacity calculation tests: %d/%d PASS\n",total-failed,total);
     return failed?1:0;
 }

@@ -1,5 +1,6 @@
 #ifndef BBATTERY_CAPACITY_H
 #define BBATTERY_CAPACITY_H
+#include <string>
 
 namespace Battery { namespace Capacity {
 inline bool interval(bool charging,double mah,double coverage,int start,int end,
@@ -26,21 +27,33 @@ inline bool health(double design,double percent,double &result){
 inline bool followsSoc(bool charging,int previous,int next){
     return charging?next>=previous-2:next<=previous+2;
 }
+class SocSequence {
+public:
+    explicit SocSequence(bool charging):charging(charging),stable(true),count(0),previous(0){}
+    bool add(double soc){
+        if(!(soc>=0&&soc<=100)||(count&&(charging?soc+2<previous:soc-2>previous)))stable=false;
+        previous=soc;++count;return stable;
+    }
+    bool valid()const{return stable&&count>=2;}
+private:
+    bool charging,stable;int count;double previous;
+};
 // Read legacy samples as well: older collectors did not flag charging SOC reversals.
-inline const char *historySql(){
-    return "SELECT s.* FROM sessions s WHERE s.mode=? AND s.battery_id=? "
+inline std::string historySql(bool namedBattery=false,bool verifySoc=true){
+    return std::string("SELECT s.* FROM sessions s WHERE s.mode=? AND ")+
+        (namedBattery?"s.id IN (SELECT session_id FROM session_batteries WHERE battery_key=?) ":"s.battery_id=? ")+
         "AND (?=0 OR s.id=?) AND s.end_ms IS NOT NULL AND s.elapsed_s>0 "
         "AND s.covered_s>=0.95*s.elapsed_s AND s.covered_s<=1.001*s.elapsed_s "
         "AND s.stable_soc=1 AND s.mah>0 AND s.mah<=20000 "
         "AND s.start_soc BETWEEN 0 AND 100 AND s.end_soc BETWEEN 0 AND 100 "
         "AND ((s.mode='discharge' AND s.start_soc-s.end_soc>=30) "
-        "OR (s.mode='charge' AND s.end_soc-s.start_soc>=30)) "
-        "AND (?<>0 OR s.id>COALESCE((SELECT MAX(id) FROM sessions WHERE reason='battery-changed'),0)) "
-        "AND NOT EXISTS (SELECT 1 FROM samples b WHERE b.session_id=s.id AND b.soc IS NOT NULL "
+        "OR (s.mode='charge' AND s.end_soc-s.start_soc>=30)) "+
+        (namedBattery?"":"AND (?<>0 OR s.id>COALESCE((SELECT MAX(id) FROM sessions WHERE reason='battery-changed'),0)) ")+
+        (verifySoc?"AND NOT EXISTS (SELECT 1 FROM samples b WHERE b.session_id=s.id AND b.soc IS NOT NULL "
         "AND ((s.mode='charge' AND b.soc+2<(SELECT a.soc FROM samples a "
         "WHERE a.session_id=s.id AND a.soc IS NOT NULL AND a.id<b.id ORDER BY a.id DESC LIMIT 1)) "
         "OR (s.mode='discharge' AND b.soc-2>(SELECT a.soc FROM samples a "
-        "WHERE a.session_id=s.id AND a.soc IS NOT NULL AND a.id<b.id ORDER BY a.id DESC LIMIT 1)))) "
+        "WHERE a.session_id=s.id AND a.soc IS NOT NULL AND a.id<b.id ORDER BY a.id DESC LIMIT 1)))) ":"")+
         "ORDER BY s.id DESC LIMIT 1";
 }
 } }

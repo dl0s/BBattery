@@ -1,9 +1,7 @@
 1
-16
+14
 main.qml
 Metric.qml
-Chart.qml
-BatteryGauge.qml
 icons/battery.png
 icons/charge.png
 icons/close.png

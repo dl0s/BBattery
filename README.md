@@ -1,132 +1,44 @@
 # BBattery
 
-Native BlackBerry Q10 battery measurement and history application.
-The GUI remains in its application sandbox. A separate, supervised collector
-reads the public BPS battery service and records data even when the GUI exits.
-The existing authorized root management context installs the collector;
-the collector drops its UID and GID before sampling, retaining only group 1000
-to traverse the account directory and this application's sandbox GID.
+BlackBerry Q10 上的定时电池容量测试工具。界面只有“测试”和“结果”两个页面。
 
-## Build
+## 使用
+
+1. 在“电池标记”中为每块实体电池建立名称，装入后“设为当前电池”。重新装回时选择已有标记，重命名不改变身份或记录。
+2. 输入测试时长（1–1440 分钟）和采样间隔。默认每 30 秒采样，可选择 10 或 60 秒。
+3. 点击“开始测试”，自动识别充电或放电方向。到时自动结束，也可提前“结束并保存”。关闭界面仍按原截止时间执行。
+4. 在“结果”中按电池查看记录，打开详情或导出本次 CSV 和 JSON 至 Documents/BBattery。每次读取 50 条，可加载更早结果。
+
+待机不采样。界面不扫描完整历史，不绘制实时曲线，不统计生命周期指标，不运行电量/温度提醒。GUI 在后台可由系统挂起；独立采集器继续执行已开始的测试。历史原始数据、电池标记及旧设置保留，可从菜单“导出全部原始数据”。旧监控片段不会伪装成新定时测试。
+
+## 结果含义
+
+区间电量（mAh）与电能（mWh）对相邻有效的电池平均电流/电压做梯形积分。测试首次采样为起点，截止采样可能略晚于设定时刻，积分与 SOC 插值截断至单调时钟截止时间。CSV 保留实际原始采样时间。
+
+缺失读数为 NULL，不是零。大采样缺口排除积分，并降低电流积分覆盖率。重启、停止采集器、更换电池、系统时间变化或充放电方向变化会结束测试并标记中断；不会自动恢复，也不会跨电池拼接。
+
+“整电池容量估计”仅在测试已完成、SOC 变化至少 30 个百分点、方向稳定、有效电流积分覆盖至少 95% 时显示。它是按本次 SOC 变化外推的参考值，不能把短时间区间电量当作已校准的整电池容量。
+
+测试记录、逐样本归属与增量结果存储于 SQLite。迁移只新增表/索引，旧样本与电池会话字段不被改写。每次采样和测试结果更新属于同一事务。测试命令有确认、20 秒有效期及防重复标记。
+
+## 构建与部署
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Package
-python tests/package_test.py
-python tools/device.py install
-python tools/device.py launch
-python tools/device.py provision
-python tools/device.py boot-hook
-```
-
-The build uses `INTROOP_SDK_ROOT` from the current process, falling back to the
-user environment variable if the terminal has not inherited it yet. The current
-SDK is `C:\bbdevtools`; pass `-SdkRoot` to override it. Icons are read from the
-neighbouring `BBFile` project, relative to this checkout.
-
-Deployment reuses `%LOCALAPPDATA%\Q10Manager\connection.json`, falling back to
-the existing `%LOCALAPPDATA%\Q10Deploy\config.json` profile when the former is
-absent, without changing credentials or host-key policy. ARM binaries use the established
-BB10 `gcc_ntoarmv7le_cpp` / `libcpp.so.4` runtime.
-
-## Measurement Boundaries
-
-- Missing, out-of-range and sentinel readings become SQL NULL, never zero.
-- The displayed current is battery **average** current, not instantaneous current.
-- Charger input and charge limits are not measured battery current.
-- SOC, health and cycle count remain explicitly system-reported values.
-- Raw PPS snapshots are retained and deduplicated independently of timed samples.
-- Restart, clock change, battery change, pause and large gaps create new segments.
-- mAh and mWh use trapezoidal integration over valid adjacent readings.
-- Capacity extrapolation requires a completed discharge segment, at least 30
-  percentage points of SOC, 95% integration coverage and stable SOC. It is not
-  a calibrated full-capacity measurement.
-- Capacity estimates are shown separately for discharge integration, charge
-  integration, remaining mAh / SOC and design capacity × reported health.
-  Charge estimates use battery current, require a completed interval with the
-  same SOC-span/coverage guards, and validate SOC direction in legacy records.
-  Remaining/SOC estimates require SOC >= 20%. Reported full capacity and design
-  capacity remain distinct reference values. Missing inputs show `--`.
-  A session/id index keeps legacy SOC-direction checks bounded on long intervals.
-- The initial collector interval is 10 seconds; 5, 30 and 60 seconds are available.
-- History is stored in the app's private data directory, not in `/tmp`.
-- The GUI shows the latest 200 segments. CSV export includes the full history.
-- No history is silently deleted.
-
-## Native History And UI
-
-The four screens are Overview, History, Records and Diagnostics. Their title
-bars are removed and the compact two-column layout targets Q10. Overview keeps
-SOC, battery average current, temperature, charge/discharge capacity estimates
-and the current process visible.
-Voltage, reported health/cycles, charger limits, snapshot-based capacity
-estimates and detailed data-quality statistics live in Diagnostics.
-
-History supports 1/6/24 hours and rolling 7/30 days, previous/next windows,
-calendar browsing, curve visibility and synchronized inspection of raw samples.
-The overview always shows the latest hour, independent of historical browsing.
-Empty periods remain empty; the chart does not stretch old data to fill them.
-All raw records contribute to time-weighted statistics and trapezoidal mAh/mWh.
-Only rendering is decimated, retaining extrema with a bounded point count.
-Inspection moves a shared native cursor without repainting the chart images.
-Drag events are coalesced at 33 ms; indexed raw-sample lookups run off the UI
-thread, reuse neighbouring samples and discard stale requests. The readout has
-a fixed height so gaps and the first touch do not move the chart beneath a finger.
-Read failures are marked incomplete rather than presented as complete statistics.
-History statistics run on a worker thread with short, paged read statements
-so the UI stays responsive and the collector can commit between pages.
-Long live ranges refresh at 30 seconds (24 hours) or 60 seconds (7/30 days);
-their actual cutoff time stays visible.
-
-Timed collection also reacts to BPS battery events, coalesced to at most one
-extra capture per two seconds without moving the regular timer deadline.
-Power transitions, charge/discharge transitions and configurable threshold
-alerts are stored in an additive `events` table. Alerts have 5-percentage-point
-SOC hysteresis, 3-degree temperature hysteresis and a ten-minute per-kind
-persistent cooldown. These are recording/in-app alerts, not OS background
-notifications or automatic charge control.
-
-When BPS charger info is unavailable, the native PPS decoder can resolve the
-charger state from the retained snapshot. Unknown remains unknown. System
-charge current and time estimates are separately labeled in Diagnostics.
-Historical source records are never rewritten.
-
-ChargeLimiter informed the interaction design only. No iOS private API,
-root HTTP server, thermal spoofing, charging-control code or GPL assets were copied.
-
-## Tests
-
-```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/test-capacity.ps1
-python tests/package_test.py
-python tests/device_tools_test.py
-python tests/device_test.py
-python tests/startup_test.py
-python tests/migration_test.py
-python tests/inspection_test.py
+python -B tests/package_test.py
+python -B tests/device_tools_test.py
+python -B tools/device.py install
+python -B tools/device.py launch
+python -B tools/device.py provision
+python -B tests/interval_device_test.py
+python -B tests/startup_test.py
 ```
 
-The collector's `--self-test` executes the actual C++ measurement and SQLite
-code against isolated temporary data. Device tests verify the real application,
-its own-window screenshots, collector identity, data validity and GUI-independent
-collection. Pause and recovery tests never terminate unrelated services.
-The startup regression test performs three real launches and switches between
-current, voltage and temperature charts. Reports are saved under `build`.
+使用 INTROOP_SDK_ROOT（当前 C:\bbdevtools）与 BB10 的 gcc_ntoarmv7le_cpp / libcpp.so.4。部署沿用本机已固定 SSH 主机密钥的 Q10 连接配置。GUI 保持应用沙箱身份；独立采集器使用非 root 身份。provision 在切换服务前对隔离 /tmp 数据库执行原生测量、存储、电池身份及定时测试边界检查。无须重启设备或重新修改已有启动钩子。
 
-Charts use QPainter only for geometry and images. Cascades labels render all
-chart text; QtGui font operations caused a startup segmentation fault on Q10.
-Deployment verifies GUI exit from individual `pidin` rows, not its table header,
-and prevents multiple GUI instances from racing over diagnostic requests.
-Collector executables are read back before execution. Deployment can reuse an
-identical verified executable. If the device denies execution on a new inode,
-it can retain a retired BBattery executable's existing trust: the file must be
-root-only, match its recorded SHA256 and pass native self-tests, and must be
-absent from both the running processes and current supervisor. Its original
-bytes are backed up before replacement, with rollback on verification failure.
-The new executable is verified and renamed to a unique hash-qualified path
-before switching the running service. No filesystem-wide trust policy is changed.
-The supervisor removes only its verified empty private lock directory; it does
-not require the unavailable `rmdir` utility on the device.
+## Q10 验证（2026-10-02）
 
-The optional boot hook adds a BBattery-only stanza to the existing root startup
-source, preserving other applications' stanzas. Installing it is not proof of
-cold-boot recovery. No automatic reboot is performed.
+0.1.0.7 已在真机完成定时测试、界面关闭后自动结束、逐样本归属、CSV/JSON 导出和待机不新增采样检查。原有 6000 条样本、23 个会话、876 个原始快照与两块电池标记全部保持原值。三次启动的场景准备时间为 684–769 毫秒，首次索引读取为 55–72 毫秒；通过 SSH 请求观察就绪的时间另含通信开销，不作为界面加载时间。
+
+原生隔离数据库检查覆盖截止时间的 mAh/mWh/SOC 截断、提前结束、缺失值、采样缺口、SOC 逆向跳变、电池身份、事务回滚与重启中断。整电池实际容量仍需用户执行足够 SOC 跨度的实测。

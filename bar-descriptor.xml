@@ -3,8 +3,8 @@
     <id>top.blaccat.BBattery</id>
     <name>BBattery</name>
     <versionNumber>0.1.0</versionNumber>
-    <buildId>5</buildId>
-    <description>On-device battery measurements, continuous history and data quality</description>
+    <buildId>7</buildId>
+    <description>Timed battery capacity tests with persistent battery markers</description>
     <author>Local Developer</author>
     <icon><image>icon.png</image></icon>
     <env var="CASCADES_THEME" value="dark"/>
@@ -12,10 +12,7 @@
     <asset path="build/bbattery" entry="true" type="Qnx/Elf">bbattery</asset>
     <asset path="assets/main.qml">assets/main.qml</asset>
     <asset path="assets/Metric.qml">assets/Metric.qml</asset>
-    <asset path="assets/Chart.qml">assets/Chart.qml</asset>
-    <asset path="assets/BatteryGauge.qml">assets/BatteryGauge.qml</asset>
     <asset path="assets/icons">assets/icons</asset>
     <permission>access_shared</permission>
-    <permission>run_when_backgrounded</permission>
     <initialWindow><systemChrome>none</systemChrome></initialWindow>
 </qnx>

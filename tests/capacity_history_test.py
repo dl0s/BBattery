@@ -7,6 +7,10 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SQL = subprocess.run([str(ROOT / "build/capacity-test.exe"), "--sql"], capture_output=True, text=True, check=True).stdout
+CANDIDATE_SQL = subprocess.run([str(ROOT / "build/capacity-test.exe"), "--candidate-sql"], capture_output=True, text=True, check=True).stdout.replace(
+    "ORDER BY s.id DESC LIMIT 1", "AND s.id<? ORDER BY s.id DESC LIMIT 1")
+SOC_SQL = re.search(r'sqlite3_prepare_v2\(db,"(SELECT id,soc[^\"]+)"',
+                    (ROOT / "src/store.cpp").read_text(encoding="utf-8")).group(1)
 INDEX = re.search(r'"(CREATE INDEX IF NOT EXISTS samples_session_order[^\"]+)"',
                   (ROOT / "src/store.cpp").read_text(encoding="utf-8")).group(1)
 
@@ -32,8 +36,28 @@ class CapacityHistoryTest(unittest.TestCase):
         self.db.executemany("INSERT INTO samples(session_id,soc) VALUES(?,?)", ((id, soc) for soc in readings))
 
     def selected(self, mode="discharge", battery=244, session=0):
-        row = self.db.execute(SQL, (mode,battery,session,session,session)).fetchone()
-        return None if row is None else row[0]
+        before = 2**63-1
+        while True:
+            row = self.db.execute(CANDIDATE_SQL, (mode,battery,session,session,session,before)).fetchone()
+            if row is None:
+                result = None
+                break
+            before = row[0]
+            readings, cursor = [], 0
+            while True:
+                page = self.db.execute(SOC_SQL, (before,cursor)).fetchall()
+                readings.extend(str(r[1]) for r in page)
+                if len(page) < 512:
+                    break
+                cursor = page[-1][0]
+            validation = subprocess.run([str(ROOT / "build/capacity-test.exe"), "--soc-sequence", mode],
+                                        input=" ".join(readings), capture_output=True, text=True, check=True).stdout.strip()
+            if validation == "valid":
+                result = row[0]
+                break
+        reference = self.db.execute(SQL, (mode,battery,session,session,session)).fetchone()
+        self.assertEqual(result, None if reference is None else reference[0], "Linear validation differs from legacy SQL")
+        return result
 
     def test_estimates_use_separate_charge_and_discharge_sessions(self):
         self.assertEqual(self.selected(), 1)
@@ -82,6 +106,12 @@ class CapacityHistoryTest(unittest.TestCase):
         self.db.set_progress_handler(progress, 1000)
         self.assertEqual(self.selected(), 3)
         self.db.set_progress_handler(None, 0)
+
+    def test_reversal_across_a_scan_page_is_rejected(self):
+        readings = [20+60*i/599 for i in range(600)]
+        readings[512] = readings[511]-3
+        self.add(3, "charge", readings)
+        self.assertEqual(self.selected("charge"), 2)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

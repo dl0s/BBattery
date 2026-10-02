@@ -118,11 +118,139 @@ bool storageTests(QString *report){
     *report+=ok?"PASS: SQLite transactions, deduplicated raw snapshots, NULL preservation, gap and pause boundaries, read-only GUI\n":
         "FAIL: SQLite storage tests\n";return ok;
 }
+bool batteryTests(QString *report){
+    const QString path=QString("/tmp/bbattery-profile-test-%1.sqlite").arg(getpid());bool ok=true;
+    QVariantList preserved;
+    {
+        Battery::Store db;ok=db.open(path,true);
+        Battery::Sample s;s.utc=100000;s.mono=100000;s.run="profile-test";s.ready=true;
+        s.batteryId=244;s.interval=10;s.mode="discharge";s.raw="profile-snapshot";
+        s.values["soc"]=90;s.values["current"]=-3600;s.values["voltage"]=4000;
+        ok=ok&&db.append(s);s.utc+=10000;s.mono+=10000;s.values["soc"]=30;ok=ok&&db.append(s);
+        preserved=db.query("SELECT * FROM samples ORDER BY id");
+        ok=ok&&db.setBattery("spare",QString::fromUtf8("备用 A"));
+        s.utc+=10000;s.mono+=10000;s.values["soc"]=90;ok=ok&&db.append(s);
+        QVariantMap firstSpare=db.query("SELECT * FROM sessions ORDER BY id DESC LIMIT 1").value(0).toMap();
+        ok=ok&&firstSpare["mah"].toDouble()==0&&firstSpare["sample_count"].toInt()==1;
+        s.utc+=10000;s.mono+=10000;s.values["soc"]=30;ok=ok&&db.append(s);
+        ok=ok&&db.setBattery("legacy",QString::fromUtf8("原装电池"));
+        s.utc+=10000;s.mono+=10000;s.values["soc"]=80;ok=ok&&db.append(s);
+        ok=ok&&db.capacitySession("discharge",244,0,"legacy")["id"].toLongLong()==1;
+        ok=ok&&db.capacitySession("discharge",244,0,"spare")["id"].toLongLong()==2;
+        ok=ok&&db.query("SELECT * FROM samples WHERE id<=2 ORDER BY id")==preserved;
+        ok=ok&&db.registerBattery("legacy",QString::fromUtf8("原装重命名"));
+        ok=ok&&db.query("SELECT id FROM sessions").size()==3;
+        QVariantMap stats;db.history(100000,150000,&stats,0,"legacy");
+        ok=ok&&stats["samples"].toInt()==3&&qAbs(stats["dischargeMah"].toDouble()-10)<0.0001;
+        db.history(100000,150000,&stats,0,"spare");ok=ok&&stats["samples"].toInt()==2;
+        ok=ok&&db.setBattery("spare",QString::fromUtf8("备用 A"));
+        ok=ok&&db.execute("CREATE TEMP TRIGGER reject_mapping BEFORE INSERT ON session_batteries BEGIN SELECT RAISE(ABORT,'test rollback'); END");
+        s.utc+=10000;s.mono+=10000;ok=ok&&!db.append(s);
+        ok=ok&&db.query("SELECT id FROM samples").size()==5&&db.query("SELECT id FROM sessions").size()==3;
+        ok=ok&&db.execute("DROP TRIGGER reject_mapping")&&db.append(s);
+        ok=ok&&db.query("SELECT battery_key FROM session_batteries WHERE session_id=4").value(0).toMap()["battery_key"]=="spare";
+        if(!ok)*report+="FAIL: battery profiles: "+db.error()+"\n";
+    }
+    {
+        Battery::Store db;ok=ok&&db.open(path,true);
+        ok=ok&&db.query("SELECT * FROM samples WHERE id<=2 ORDER BY id")==preserved;
+        ok=ok&&db.query("SELECT session_id FROM session_batteries WHERE battery_key='spare'").size()==2;
+        ok=ok&&db.capacitySession("discharge",244,0,"legacy")["id"].toLongLong()==1;
+        Battery::Sample s;s.utc=200000;s.mono=200000;s.run="legacy-soc";s.ready=true;
+        s.batteryId=244;s.interval=10;s.mode="charge";s.raw="legacy-soc-snapshot";
+        s.values["current"]=3600;s.values["soc"]=20;
+        ok=ok&&db.append(s);s.utc+=10000;s.mono+=10000;s.values["soc"]=50;ok=ok&&db.append(s);
+        s.utc+=10000;s.mono+=10000;s.values["soc"]=80;ok=ok&&db.append(s)&&db.closeSession("test-completed");
+        const int readings[]={20,60,40,80};
+        for(int i=0;i<4;++i){s.utc+=10000;s.mono+=10000;s.values["soc"]=readings[i];ok=ok&&db.append(s);}
+        ok=ok&&db.closeSession("test-completed")&&db.execute("UPDATE sessions SET stable_soc=1 WHERE id=6");
+        ok=ok&&db.capacitySession("charge",244,0,"legacy")["id"].toLongLong()==5;
+        ok=ok&&db.capacitySession("charge",244,6,"legacy").isEmpty();
+        if(!ok)*report+="FAIL: paged legacy SOC validation: "+db.error()+"\n";
+    }
+    QFile::remove(path);QFile::remove(path+"-journal");
+    *report+=ok?"PASS: battery profile A/B/A identity, isolated integration and capacity, rename, rollback, restart and sample preservation\n":
+        "FAIL: battery profile tests\n";return ok;
+}
+bool testCheck(bool condition,const char *label,QString *report){
+    *report+=QString(condition?"PASS: ":"FAIL: ")+label+"\n";return condition;
+}
+bool intervalTests(QString *report){
+    const QString path=QString("/tmp/bbattery-interval-test-%1.sqlite").arg(getpid());bool ok=true;
+    {
+        Battery::Store db;ok=db.open(path,true);
+        Battery::Sample s;s.utc=100000;s.mono=100000;s.run="interval-test";s.ready=true;s.batteryId=244;s.interval=30;
+        s.mode="discharge";s.raw="interval-snapshot";s.values["soc"]=90.2;s.values["current"]=-3600;s.values["voltage"]=4000;
+        ok=testCheck(db.startTest("timer","legacy","A",60,s),"test starts with immediate sample",report)&&ok;
+        ok=testCheck(!db.startTest("duplicate","legacy","A",60,s),"duplicate start rejected",report)&&ok;
+        s.utc+=30000;s.mono+=30000;s.values["soc"]=75.2;ok=db.append(s)&&ok;
+        s.utc+=31000;s.mono+=31000;s.values["soc"]=59.7;ok=db.append(s)&&db.finishTest("timer",true)&&ok;
+        QVariantMap t=db.query("SELECT * FROM capacity_tests WHERE id='timer'").value(0).toMap();
+        ok=testCheck(qAbs(t["discharge_mah"].toDouble()-60)<0.0001&&qAbs(t["discharge_mwh"].toDouble()-240)<0.0001
+            &&t["elapsed_s"].toDouble()==60&&qAbs(t["end_soc"].toDouble()-60.2)<0.0001,
+            "deadline clips charge, energy, SOC and elapsed time",report)&&ok;
+        ok=testCheck(qAbs(t["capacity"].toDouble()-200)<0.0001&&t["status"]=="completed"&&db.runningTest().isEmpty(),
+            "completed fractional-SOC capacity with 100 percent coverage",report)&&ok;
+        ok=testCheck(db.query("SELECT * FROM test_samples WHERE test_id='timer'").size()==3,"exact sample ownership",report)&&ok;
+        const QVariantList preserved=db.query("SELECT * FROM samples ORDER BY id");
+        s.utc+=30000;s.mono+=30000;s.values["soc"]=80;
+        ok=db.startTest("manual","spare","B",60,s)&&ok;
+        s.utc+=15000;s.mono+=15000;s.values["soc"]=75;ok=db.append(s)&&db.finishTest("manual",true)&&ok;
+        t=db.query("SELECT * FROM capacity_tests WHERE id='manual'").value(0).toMap();
+        ok=testCheck(t["elapsed_s"].toDouble()==15&&qAbs(t["discharge_mah"].toDouble()-15)<0.0001&&t["capacity"].isNull(),
+            "manual finish and short SOC range refuses extrapolation",report)&&ok;
+        ok=testCheck(db.query("SELECT * FROM samples WHERE id<=3 ORDER BY id")==preserved&&t["battery_key"]=="spare",
+            "battery switch preserves prior samples and isolates tests",report)&&ok;
+        ok=db.registerBattery("spare","renamed B")&&ok;
+        ok=testCheck(db.query("SELECT id FROM capacity_tests WHERE battery_key='spare'").size()==1,"rename preserves test identity",report)&&ok;
+        s.utc+=30000;s.mono+=30000;s.values["soc"]=90;ok=db.startTest("gap","legacy","A",180,s)&&ok;
+        s.utc+=120000;s.mono+=120000;s.values["soc"]=30;ok=db.append(s)&&db.finishTest("manual",true)&&ok;
+        t=db.query("SELECT * FROM capacity_tests WHERE id='gap'").value(0).toMap();
+        ok=testCheck(t["integrated_s"].toDouble()==0&&t["gaps"].toInt()==1&&t["capacity"].isNull(),"sampling gap is excluded",report)&&ok;
+        s.utc+=30000;s.mono+=30000;s.values["soc"]=90;ok=db.startTest("mixed","legacy","A",60,s)&&ok;
+        s.utc+=30000;s.mono+=30000;s.mode="charge";s.values["current"]=3600;s.values["soc"]=30;
+        ok=db.append(s)&&db.finishTest("state-changed",false)&&ok;
+        t=db.query("SELECT * FROM capacity_tests WHERE id='mixed'").value(0).toMap();
+        ok=testCheck(t["integrated_s"].toDouble()==0&&t["status"]=="interrupted"&&t["capacity"].isNull(),"mixed direction refuses capacity",report)&&ok;
+        s.utc+=30000;s.mono+=30000;s.mode="charge";s.values["soc"]=20;ok=db.startTest("unstable","legacy","A",90,s)&&ok;
+        s.utc+=30000;s.mono+=30000;s.values["soc"]=60;ok=db.append(s)&&ok;
+        s.utc+=30000;s.mono+=30000;s.values["soc"]=40;ok=db.append(s)&&ok;
+        s.utc+=30000;s.mono+=30000;s.values["soc"]=80;ok=db.append(s)&&db.finishTest("timer",true)&&ok;
+        t=db.query("SELECT * FROM capacity_tests WHERE id='unstable'").value(0).toMap();
+        ok=testCheck(!t["stable_soc"].toBool()&&t["capacity"].isNull(),"interior SOC reversal refuses capacity",report)&&ok;
+        s.utc+=30000;s.mono+=30000;s.values.remove("soc");s.values.remove("voltage");
+        ok=db.startTest("missing","legacy","A",60,s)&&ok;
+        s.utc+=30000;s.mono+=30000;ok=db.append(s)&&db.finishTest("manual",true)&&ok;
+        t=db.query("SELECT * FROM capacity_tests WHERE id='missing'").value(0).toMap();
+        ok=testCheck(t["energy_s"].toDouble()==0&&t["capacity"].isNull()&&t["start_soc"].isNull(),"missing SOC and voltage remain unavailable",report)&&ok;
+        s.utc+=30000;s.mono+=30000;s.values["soc"]=20;s.values["voltage"]=4000;
+        ok=db.startTest("rollback","legacy","A",60,s)&&ok;
+        const int before=db.query("SELECT id FROM samples").size();
+        ok=db.execute("CREATE TEMP TRIGGER reject_test BEFORE UPDATE ON capacity_tests BEGIN SELECT RAISE(ABORT,'test rollback'); END")&&ok;
+        s.utc+=30000;s.mono+=30000;s.values["soc"]=50;
+        ok=testCheck(!db.append(s)&&db.query("SELECT id FROM samples").size()==before&&
+            db.query("SELECT sample_id FROM test_samples WHERE test_id='rollback'").size()==1,"test update and sample transaction roll back together",report)&&ok;
+        ok=db.execute("DROP TRIGGER reject_test")&&db.append(s)&&db.finishTest("manual",true)&&ok;
+        s.utc+=30000;s.mono+=30000;s.mode="plugged";
+        ok=testCheck(!db.startTest("invalid","legacy","A",60,s),"idle charge state cannot start capacity test",report)&&ok;
+        s.mode="charge";ok=db.startTest("restart","legacy","A",60,s)&&ok;
+    }
+    {
+        Battery::Store db;ok=db.open(path,true)&&ok;
+        QVariantMap t=db.query("SELECT * FROM capacity_tests WHERE id='restart'").value(0).toMap();
+        ok=testCheck(t["status"]=="interrupted"&&t["reason"]=="collector-restart"&&t["capacity"].isNull()&&db.runningTest().isEmpty(),
+            "restart persists and interrupts test without resuming",report)&&ok;
+        ok=testCheck(db.query("SELECT id FROM capacity_tests WHERE battery_key='spare'").size()==1,"battery identity survives restart",report)&&ok;
+    }
+    QFile::remove(path);QFile::remove(path+"-journal");
+    *report+=ok?"PASS: interval test storage and measurement boundaries\n":"FAIL: interval test storage and measurement boundaries\n";
+    return ok;
+}
 }
 int main(int argc,char **argv){
     QCoreApplication app(argc,argv);QStringList args=app.arguments();
     if(args.contains("--self-test")){
-        QString report;bool ok=Battery::selfTest(&report);ok=storageTests(&report)&&ok;
+        QString report;bool ok=Battery::selfTest(&report);ok=storageTests(&report)&&ok;ok=batteryTests(&report)&&ok;ok=intervalTests(&report)&&ok;
         std::fputs(report.toUtf8().constData(),stdout);return ok?0:1;
     }
     int index=args.indexOf("--data");if(index<0 || index+1>=args.size()){std::fputs("--data is required\n",stderr);return 2;}
@@ -149,49 +277,86 @@ int main(int argc,char **argv){
     signal(SIGTERM,stop);signal(SIGINT,stop);signal(SIGHUP,SIG_IGN);
     Battery::Store db;if(!db.open(dir+"/history.sqlite",true)){std::fputs(db.error().toUtf8().constData(),stderr);return 5;}
     if(bps_initialize()!=BPS_SUCCESS){std::fputs("BPS initialization failed\n",stderr);return 6;}
-    battery_request_events(0);
-    const QString run=QUuid::createUuid().toString();qint64 next=0,lastHeartbeat=0,lastSample=0;
-    bool wasPaused=false,eventPending=false;QString failure;Battery::AlertMonitor alerts;
-    std::fprintf(stderr,"BBattery collector 0.1.0.5 started; pid=%d euid=%d\n",int(getpid()),int(geteuid()));
+    const QString run=QUuid::createUuid().toString();qint64 next=0,lastHeartbeat=0,deadline=0;
+    QString failure,activeKey;QMap<QString,QString> labels;
+    std::fprintf(stderr,"BBattery collector 0.1.0.7 interval tests; pid=%d euid=%d\n",int(getpid()),int(geteuid()));
     while(!stopping){
         QSettings settings(dir+"/settings.ini",QSettings::IniFormat);
-        int interval=settings.value("interval",10).toInt();if(interval!=5&&interval!=10&&interval!=30&&interval!=60)interval=10;
-        bool paused=settings.value("paused",false).toBool();
-        if(paused&&!wasPaused){if(!db.closeSession("paused"))failure=db.error();next=0;}
-        if(!paused&&wasPaused)next=0;
-        wasPaused=paused;qint64 now=Battery::monoMillis();
-        if(!paused&&(now>=next||(eventPending&&now-lastSample>=2000))){
-            Battery::Sample s=capture(run,interval);
-            if(db.append(s)){
-                failure=s.error;Battery::AlertConfig config;
-                config.enabled=settings.value("alerts/enabled",true).toBool();
-                config.lowSoc=qBound(5,settings.value("alerts/low",20).toInt(),40);
-                config.highSoc=qBound(60,settings.value("alerts/high",90).toInt(),100);
-                config.temperature=qBound(35,settings.value("alerts/temperature",45).toInt(),55);
-                QStringList triggered=alerts.evaluate(s,config);
-                foreach(const QString &kind,triggered){
-                    QString text=kind=="low-soc"?QString::fromUtf8("低电量 · %1%").arg(s.value("soc"),0,'f',0):
-                        kind=="high-soc"?QString::fromUtf8("充电达到提醒电量 · %1%").arg(s.value("soc"),0,'f',0):
-                        QString::fromUtf8("电池温度偏高 · %1 C").arg(s.value("temperature"),0,'f',1);
-                    if(!db.recordEvent(s,kind,text,600))failure=db.error();
-                }
-            }else failure=db.error();
-            lastSample=now;eventPending=false;
-            if(now>=next)next=now+qint64(interval)*1000;
+        settings.beginGroup("batteries");QStringList keys=settings.childKeys();settings.endGroup();
+        if(!keys.contains("legacy"))keys.prepend("legacy");
+        bool batteryReady=true;
+        foreach(const QString &key,keys){
+            QString label=settings.value("batteries/"+key,QString::fromUtf8("电池 1")).toString().trimmed();
+            if(labels.value(key)!=label){
+                if(db.registerBattery(key,label))labels[key]=label;else{batteryReady=false;failure=db.error();}
+            }
         }
-        if(now-lastHeartbeat>=5000){
-            if(!db.heartbeat(run,interval,paused,failure))std::fputs("Database heartbeat failed\n",stderr);
+        QString key=settings.value("battery/active","legacy").toString();if(!keys.contains(key))key="legacy";
+        if(key!=activeKey&&batteryReady){
+            if(!db.runningTest().isEmpty()&&!db.finishTest("battery-marker-changed",false))batteryReady=false;
+            if(batteryReady&&db.setBattery(key,labels.value(key)))activeKey=key;
+            else{batteryReady=false;failure=db.error();}
+        }
+        int interval=settings.value("test/interval",30).toInt();if(interval!=10&&interval!=30&&interval!=60)interval=30;
+        const QString request=settings.value("test/request").toString();
+        const QString handled=db.query("SELECT request_id FROM test_control WHERE id=1").value(0).toMap()["request_id"].toString();
+        qint64 now=Battery::monoMillis();
+        if(!request.isEmpty()&&request!=handled){
+            bool ok=false;QString note;QString operation=settings.value("test/operation").toString();
+            if(settings.value("test/expires").toLongLong()<Battery::utcMillis())note=QString::fromUtf8("操作已过期，请重试");
+            else if(operation=="start"){
+                if(!db.runningTest().isEmpty())note=QString::fromUtf8("已有测试正在进行");
+                else if(!batteryReady||settings.value("test/battery").toString()!=activeKey)note=QString::fromUtf8("电池标记尚未就绪");
+                else{
+                    Battery::Sample s=capture(run,interval);
+                    ok=db.startTest(request,activeKey,labels.value(activeKey),settings.value("test/seconds").toInt(),s);
+                    note=ok?QString::fromUtf8("测试已开始"):QString::fromUtf8("无法开始：请保持充电或放电，并检查电池读数");
+                    if(ok){deadline=db.testDeadline();next=s.mono+qint64(interval)*1000;failure=s.error;}
+                }
+            }else if(operation=="stop"){
+                if(db.runningTest().isEmpty()||settings.value("test/target").toString()!=db.runningTest())note=QString::fromUtf8("测试已经结束");
+                else{
+                    Battery::Sample s=capture(run,interval);
+                    QVariantMap t=db.query("SELECT mode FROM capacity_tests WHERE id=?",QVariantList()<<db.runningTest()).value(0).toMap();
+                    QVariantMap prior=db.query("SELECT battery_id,utc_ms,mono_ms FROM samples ORDER BY id DESC LIMIT 1").value(0).toMap();
+                    QString reason;
+                    if(s.batteryId!=prior["battery_id"].toInt())reason="battery-changed";
+                    else if(qAbs((s.utc-prior["utc_ms"].toLongLong())-(s.mono-prior["mono_ms"].toLongLong()))>2000)reason="clock-change";
+                    else if(!s.ready||s.mode!=t["mode"].toString())reason="state-changed";
+                    ok=reason.isEmpty()?(db.append(s)&&db.finishTest(s.mono>=deadline?"timer":"manual",true)):db.finishTest(reason,false);
+                    note=ok?QString::fromUtf8("测试已结束并保存"):QString::fromUtf8("结束失败，请重试");
+                }
+            }else note=QString::fromUtf8("未知测试操作");
+            if(!db.execute("INSERT OR REPLACE INTO test_control VALUES(1,?,?,?)",QVariantList()<<request<<int(ok)<<note))failure=db.error();
+            lastHeartbeat=0;
+        }
+        now=Battery::monoMillis();
+        if(batteryReady&&!db.runningTest().isEmpty()&&(now>=next||now>=deadline)){
+            Battery::Sample s=capture(run,interval);
+            QVariantMap t=db.query("SELECT mode FROM capacity_tests WHERE id=?",QVariantList()<<db.runningTest()).value(0).toMap();
+            QVariantMap prior=db.query("SELECT battery_id,utc_ms,mono_ms FROM samples ORDER BY id DESC LIMIT 1").value(0).toMap();
+            QString reason;
+            if(s.batteryId!=prior["battery_id"].toInt())reason="battery-changed";
+            else if(qAbs((s.utc-prior["utc_ms"].toLongLong())-(s.mono-prior["mono_ms"].toLongLong()))>2000)reason="clock-change";
+            else if(!s.ready||s.mode!=t["mode"].toString())reason="state-changed";
+            if(!reason.isEmpty()){
+                if(!db.finishTest(reason,false))failure=db.error();
+            }else if(db.append(s)){
+                failure=s.error;
+                if(s.mono>=deadline&&!db.finishTest("timer",true))failure=db.error();
+            }else failure=db.error();
+            next=s.mono+qint64(interval)*1000;
+            if(db.runningTest().isEmpty())lastHeartbeat=0;
+        }
+        const bool idle=db.runningTest().isEmpty();
+        if(now-lastHeartbeat>=(idle?30000:10000)||lastHeartbeat==0){
+            if(!db.heartbeat(run,interval,idle,failure))std::fputs("Database heartbeat failed\n",stderr);
             lastHeartbeat=now;
         }
-        bps_event_t *event=0;
-        qint64 due=eventPending?qMin(next,lastSample+2000):next;
-        int wait=paused?5000:int(qMin(qint64(5000),qMax(qint64(1),due-Battery::monoMillis())));
-        bps_get_event(&event,wait);
-        while(event){
-            if(bps_event_get_domain(event)==battery_get_domain()&&bps_event_get_code(event)==BATTERY_INFO)eventPending=true;
-            if(bps_get_event(&event,0)!=BPS_SUCCESS)break;
-        }
+        // No event subscription or idle samples. Only poll for test commands.
+        usleep(idle?2000000:1000000);
     }
+    db.finishTest("collector-stopped",false);
     db.closeSession("collector-stopped");db.heartbeat(run,10,true,"Collector stopped");
-    battery_stop_events(0);bps_shutdown();::close(lock);return 0;
+    bps_shutdown();::close(lock);return 0;
 }

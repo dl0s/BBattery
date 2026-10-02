@@ -59,7 +59,7 @@ void flushBucket(QVariantList &out,QVariantList &bucket,bool mixed){
 }
 }
 Store::Store():db(0),havePrevious(false),session(0),count(0),startSoc(-1),lastSoc(-1),
-    stableSoc(true),mah(0),mwh(0),covered(0),energyCovered(0),startMono(0){}
+    stableSoc(true),mah(0),mwh(0),covered(0),energyCovered(0),startMono(0),batteryKey("legacy"){}
 Store::~Store(){if(db)sqlite3_close(db);}
 bool Store::execute(const QString &sql,const QVariantList &values){
     sqlite3_stmt *s=0;
@@ -88,7 +88,7 @@ bool Store::open(const QString &path,bool writer){
     if(!writer) return execute("PRAGMA query_only=ON");
     // DELETE journaling supports read-only clients on this legacy SQLite runtime.
     const char *schema=
-        "PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;"
+        "PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; BEGIN IMMEDIATE;"
         "CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY,value TEXT);"
         "INSERT OR IGNORE INTO metadata VALUES('schema','1');"
         "CREATE TABLE IF NOT EXISTS snapshots(id INTEGER PRIMARY KEY,raw TEXT NOT NULL UNIQUE);"
@@ -105,22 +105,82 @@ bool Store::open(const QString &path,bool writer){
         "CREATE INDEX IF NOT EXISTS samples_time ON samples(utc_ms);"
         "CREATE INDEX IF NOT EXISTS samples_session ON samples(session_id,utc_ms);"
         "CREATE INDEX IF NOT EXISTS samples_session_order ON samples(session_id,id);"
+        "CREATE INDEX IF NOT EXISTS sessions_battery_mode ON sessions(battery_id,mode,id);"
+        "CREATE INDEX IF NOT EXISTS sessions_reason ON sessions(reason,id);"
+        "CREATE TABLE IF NOT EXISTS battery_profiles(key TEXT PRIMARY KEY,label TEXT NOT NULL);"
+        "INSERT OR IGNORE INTO battery_profiles VALUES('legacy','电池 1');"
+        "CREATE TABLE IF NOT EXISTS session_batteries(session_id INTEGER PRIMARY KEY REFERENCES sessions(id),"
+        "battery_key TEXT NOT NULL REFERENCES battery_profiles(key));"
+        "CREATE INDEX IF NOT EXISTS session_batteries_key ON session_batteries(battery_key,session_id);"
+        "INSERT OR IGNORE INTO session_batteries SELECT id,'legacy' FROM sessions "
+        "WHERE NOT EXISTS (SELECT 1 FROM metadata WHERE key='battery_profiles_migrated');"
+        "INSERT OR IGNORE INTO metadata VALUES('battery_profiles_migrated','1');"
         "CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY,utc_ms INTEGER NOT NULL,kind TEXT NOT NULL,"
         "text TEXT NOT NULL,session_id INTEGER,sample_id INTEGER);"
         "CREATE INDEX IF NOT EXISTS events_time ON events(utc_ms);"
+        "CREATE TABLE IF NOT EXISTS capacity_tests(id TEXT PRIMARY KEY,battery_key TEXT NOT NULL REFERENCES battery_profiles(key),"
+        "start_ms INTEGER NOT NULL,start_mono INTEGER NOT NULL,deadline_mono INTEGER NOT NULL,requested_s INTEGER NOT NULL,"
+        "last_ms INTEGER NOT NULL,last_mono INTEGER NOT NULL,end_ms INTEGER,status TEXT NOT NULL,reason TEXT,mode TEXT NOT NULL,"
+        "samples INTEGER DEFAULT 0,discharge_mah REAL DEFAULT 0,charge_mah REAL DEFAULT 0,discharge_mwh REAL DEFAULT 0,charge_mwh REAL DEFAULT 0,"
+        "integrated_s REAL DEFAULT 0,energy_s REAL DEFAULT 0,elapsed_s REAL DEFAULT 0,start_soc REAL,end_soc REAL,stable_soc INTEGER DEFAULT 1,"
+        "gaps INTEGER DEFAULT 0,capacity REAL);"
+        "CREATE INDEX IF NOT EXISTS capacity_tests_battery ON capacity_tests(battery_key,start_ms);"
+        "CREATE INDEX IF NOT EXISTS capacity_tests_status ON capacity_tests(status);"
+        "CREATE TABLE IF NOT EXISTS test_samples(test_id TEXT NOT NULL REFERENCES capacity_tests(id),"
+        "sample_id INTEGER NOT NULL UNIQUE REFERENCES samples(id),PRIMARY KEY(test_id,sample_id));"
+        "CREATE TABLE IF NOT EXISTS test_control(id INTEGER PRIMARY KEY CHECK(id=1),request_id TEXT,ok INTEGER,message TEXT);"
         "CREATE TABLE IF NOT EXISTS collector_state(id INTEGER PRIMARY KEY CHECK(id=1),run_id TEXT,utc_ms INTEGER,"
-        "mono_ms INTEGER,interval_s INTEGER,paused INTEGER,error TEXT,pid INTEGER,euid INTEGER);";
+        "mono_ms INTEGER,interval_s INTEGER,paused INTEGER,error TEXT,pid INTEGER,euid INTEGER); COMMIT;";
     char *err=0;
     if(sqlite3_exec(db,schema,0,0,&err)!=SQLITE_OK){failure=QString::fromUtf8(err?err:"Schema failed");sqlite3_free(err);return false;}
     QVariantList version=query("SELECT value FROM metadata WHERE key='schema'");
     if(version.isEmpty() || version.first().toMap()["value"]!="1"){failure="Unsupported database schema";return false;}
     if(!query("SELECT id FROM samples LIMIT 1").isEmpty())pendingBreak="collector-restart";
+    if(!execute("UPDATE capacity_tests SET status='interrupted',reason='collector-restart',end_ms=last_ms,capacity=NULL WHERE status='running'"))return false;
     return execute("UPDATE sessions SET end_ms=last_ms,reason='collector-restart' WHERE end_ms IS NULL");
 }
-QVariantMap Store::capacitySession(const QString &mode,int batteryId,qint64 sessionId){
-    if(batteryId<0||(mode!="charge"&&mode!="discharge"))return QVariantMap();
-    QVariantList rows=query(Capacity::historySql(),QVariantList()<<mode<<batteryId<<sessionId<<sessionId<<sessionId);
-    return rows.isEmpty()?QVariantMap():rows.first().toMap();
+QVariantMap Store::capacitySession(const QString &mode,int batteryId,qint64 sessionId,const QString &key){
+    if((batteryId<0&&key.isEmpty())||(mode!="charge"&&mode!="discharge"))return QVariantMap();
+    QVariantList bindings;bindings<<mode<<(key.isEmpty()?QVariant(batteryId):QVariant(key))<<sessionId<<sessionId;
+    if(key.isEmpty())bindings<<sessionId;
+    QString sql=QString::fromUtf8(Capacity::historySql(!key.isEmpty(),false).c_str());
+    sql.replace("ORDER BY s.id DESC LIMIT 1","AND s.id<? ORDER BY s.id DESC LIMIT 1");
+    qint64 before=Q_INT64_C(9223372036854775807);
+    for(;;){
+        QVariantList values=bindings;values<<before;QVariantList rows=query(sql,values);
+        if(rows.isEmpty())return QVariantMap();
+        QVariantMap row=rows.first().toMap();before=row["id"].toLongLong();
+        Capacity::SocSequence sequence(mode=="charge");sqlite3_stmt *probe=0;
+        // One ordered pass replaces a correlated previous-SOC lookup for every sample.
+        if(sqlite3_prepare_v2(db,"SELECT id,soc FROM samples WHERE session_id=? AND id>? AND soc IS NOT NULL ORDER BY id LIMIT 512",
+            -1,&probe,0)!=SQLITE_OK){failure=QString::fromUtf8(sqlite3_errmsg(db));return QVariantMap();}
+        qint64 cursor=0;bool stable=true,complete=true;
+        while(stable){
+            sqlite3_bind_int64(probe,1,before);sqlite3_bind_int64(probe,2,cursor);int rc,n=0;
+            while((rc=sqlite3_step(probe))==SQLITE_ROW){
+                cursor=sqlite3_column_int64(probe,0);++n;
+                if(!sequence.add(sqlite3_column_double(probe,1))){stable=false;break;}
+            }
+            if(stable&&rc!=SQLITE_DONE){failure=QString::fromUtf8(sqlite3_errmsg(db));complete=false;}
+            sqlite3_reset(probe);
+            if(!complete||n<512||!stable)break;
+            usleep(1000);
+        }
+        sqlite3_finalize(probe);
+        if(!complete)return QVariantMap();
+        if(sequence.valid())return row;
+    }
+}
+bool Store::registerBattery(const QString &key,const QString &label){
+    if(key.isEmpty()||label.trimmed().isEmpty())return false;
+    if(!execute("INSERT OR IGNORE INTO battery_profiles VALUES(?,?)",QVariantList()<<key<<label))return false;
+    return execute("UPDATE battery_profiles SET label=? WHERE key=? AND label<>?",QVariantList()<<label<<key<<label);
+}
+bool Store::setBattery(const QString &key,const QString &label){
+    if(!registerBattery(key,label))return false;
+    if(key==batteryKey)return true;
+    if(!closeSession("battery-marker-changed"))return false;
+    batteryKey=key;pendingBreak="battery-marker-changed";return true;
 }
 bool Store::beginSession(const Sample &s){
     startSoc=s.has("soc")?int(s.value("soc")):-1;lastSoc=startSoc;count=0;mah=0;mwh=0;
@@ -128,7 +188,8 @@ bool Store::beginSession(const Sample &s){
     QVariant soc=startSoc>=0?QVariant(startSoc):QVariant();
     if(!execute("INSERT INTO sessions(start_ms,last_ms,mode,battery_id,start_soc,end_soc) VALUES(?,?,?,?,?,?)",
        QVariantList()<<s.utc<<s.utc<<s.mode<<s.batteryId<<soc<<soc))return false;
-    session=sqlite3_last_insert_rowid(db);return true;
+    session=sqlite3_last_insert_rowid(db);
+    return execute("INSERT INTO session_batteries VALUES(?,?)",QVariantList()<<session<<batteryKey);
 }
 bool Store::closeSession(const QString &reason){
     if(!session){havePrevious=false;return true;}
@@ -171,6 +232,7 @@ bool Store::append(const Sample &s){
     if(ok)ok=execute("INSERT INTO samples(utc_ms,mono_ms,run_id,session_id,snapshot_id,interval_s,ready,battery_id,"
         "mode,charger,phase,soc,current,voltage,temperature,design,full_capacity,remaining,health,cycles,input_limit,"
         "charge_limit,input_current,source_changed,gap_reason,error) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",v);
+    if(ok&&!testId.isEmpty())ok=appendTest(s,savedPrevious,savedHave,step,sqlite3_last_insert_rowid(db));
     ++count;
     if(ok)ok=execute("UPDATE sessions SET last_ms=?,end_soc=?,sample_count=?,mah=?,mwh=?,covered_s=?,energy_covered_s=?,"
         "elapsed_s=?,stable_soc=? WHERE id=?",QVariantList()<<s.utc<<(lastSoc>=0?QVariant(lastSoc):QVariant())<<count<<mah<<mwh
@@ -179,6 +241,7 @@ bool Store::append(const Sample &s){
     if(ok&&savedHave&&connected(savedPrevious.charger)!=connected(s.charger))
         ok=recordEvent(s,connected(s.charger)?"power-connected":"power-disconnected",
             QString::fromUtf8(connected(s.charger)?"接入外部电源":"断开外部电源"));
+    if(ok&&breakReason=="battery-marker-changed")ok=recordEvent(s,"battery-marker-changed",QString::fromUtf8("切换电池标记"));
     if(ok)ok=execute("COMMIT");
     if(!ok){
         execute("ROLLBACK");previous=savedPrevious;havePrevious=savedHave;session=savedSession;
@@ -198,18 +261,22 @@ bool Store::recordEvent(const Sample &s,const QString &kind,const QString &text,
     return execute("INSERT INTO events(utc_ms,kind,text,session_id,sample_id) VALUES(?,?,?,?,"
         "(SELECT MAX(id) FROM samples))",QVariantList()<<s.utc<<kind<<text<<session);
 }
-QVariantList Store::history(qint64 begin,qint64 end,QVariantMap *summary,qint64 sessionId){
+QVariantList Store::history(qint64 begin,qint64 end,QVariantMap *summary,qint64 sessionId,const QString &key){
     HistorySummary stats(begin,end);QVariantList plot,bucket;
     QVariantList maximum=query("SELECT MAX(id) AS last_id FROM samples");
     qint64 maximumId=maximum.isEmpty()?0:maximum.first().toMap()["last_id"].toLongLong();
     QString scope=sessionId?QString(" AND session_id=%1").arg(sessionId):QString();
+    if(!key.isEmpty()){
+        QString escaped=key;escaped.replace("'","''");
+        scope+=" AND session_id IN (SELECT session_id FROM session_batteries WHERE battery_key='"+escaped+"')";
+    }
     scope+=QString(" AND id<=%1").arg(maximumId);
     QVariantList prior=query("SELECT * FROM samples WHERE utc_ms<?"+scope+" ORDER BY utc_ms DESC,id DESC LIMIT 1",QVariantList()<<begin);
     if(!prior.isEmpty())stats.add(prior.first().toMap());
     qint64 width=qMax(qint64(1),(end-begin)/360),index=-1;bool mixed=false;QVariantMap previousRow;
-    qint64 cursorTime=begin,cursorId=-1;bool complete=true;
+    qint64 cursorTime=begin,cursorId=-1;bool complete=failure.isEmpty();
     // Short read statements let the independent writer commit between pages.
-    for(;;){
+    while(complete){
         sqlite3_stmt *s=0;
         QString sql="SELECT * FROM samples WHERE utc_ms>=? AND utc_ms<=?"+scope+
             " AND (utc_ms>? OR id>?) ORDER BY utc_ms,id LIMIT 512";
@@ -237,11 +304,85 @@ QVariantList Store::history(qint64 begin,qint64 end,QVariantMap *summary,qint64 
     flushBucket(plot,bucket,mixed);
     QVariantList after=query("SELECT * FROM samples WHERE utc_ms>?"+scope+" ORDER BY utc_ms,id LIMIT 1",QVariantList()<<end);
     if(!after.isEmpty())stats.add(after.first().toMap());
+    complete=complete&&failure.isEmpty();
     if(summary){*summary=stats.result();(*summary)["complete"]=complete;}
     return plot;
 }
 bool Store::heartbeat(const QString &run,int interval,bool paused,const QString &error){
     return execute("INSERT OR REPLACE INTO collector_state VALUES(1,?,?,?,?,?,?,?,?)",
         QVariantList()<<run<<utcMillis()<<monoMillis()<<interval<<int(paused)<<error<<qint64(getpid())<<qint64(geteuid()));
+}
+
+bool Store::startTest(const QString &id,const QString &key,const QString &label,int seconds,const Sample &first){
+    if(id.isEmpty()||seconds<60||seconds>86400||!testId.isEmpty()||!first.ready||
+       !first.has("current")||(first.mode!="charge"&&first.mode!="discharge")){
+        failure="Battery must be charging or discharging; duration must be 1-1440 minutes";return false;
+    }
+    if(!setBattery(key,label)||!closeSession("test-started"))return false;
+    if(!execute("INSERT INTO capacity_tests(id,battery_key,start_ms,start_mono,deadline_mono,requested_s,last_ms,last_mono,status,mode,start_soc,end_soc) "
+        "VALUES(?,?,?,?,?,?,?,?,'running',?,?,?)",QVariantList()<<id<<key<<first.utc<<first.mono
+        <<first.mono+qint64(seconds)*1000<<seconds<<first.utc<<first.mono<<first.mode<<first.values.value("soc")<<first.values.value("soc")))return false;
+    testId=id;
+    if(append(first))return true;
+    finishTest("storage-error",false);return false;
+}
+qint64 Store::testDeadline()const{
+    // The collector owns this connection and reads only one indexed row.
+    QVariantList rows=const_cast<Store*>(this)->query("SELECT deadline_mono FROM capacity_tests WHERE id=?",QVariantList()<<testId);
+    return rows.isEmpty()?0:rows.first().toMap()["deadline_mono"].toLongLong();
+}
+bool Store::appendTest(const Sample &s,const Sample &prior,bool havePrior,const Step &step,qint64 sampleId){
+    QVariantList rows=query("SELECT * FROM capacity_tests WHERE id=? AND status='running'",QVariantList()<<testId);
+    if(rows.isEmpty()){failure="Running test unavailable";return false;}
+    QVariantMap t=rows.first().toMap();
+    const qint64 deadline=t["deadline_mono"].toLongLong();
+    const qint64 endpoint=qMin(s.mono,deadline);
+    const double elapsed=qMax(0.0,(endpoint-t["start_mono"].toLongLong())/1000.0);
+    const double fraction=havePrior&&s.mono>prior.mono?qBound(0.0,double(endpoint-prior.mono)/(s.mono-prior.mono),1.0):1.0;
+    bool stable=t["stable_soc"].toBool()&&s.ready&&s.has("soc")&&s.mode==t["mode"].toString();
+    if(havePrior&&!step.breakReason.isEmpty()&&step.breakReason!="sampling-gap")stable=false;
+    if(havePrior&&prior.has("soc")&&s.has("soc")){
+        double a=prior.value("soc"),b=s.value("soc");
+        if(s.mode=="charge"?b+2<a:b-2>a)stable=false;
+    }
+    double q=0,e=0,covered=0,energy=0;
+    if(havePrior&&step.chargeValid&&prior.mode==t["mode"].toString()){
+        const double a=qAbs(prior.value("current")),b=qAbs(s.value("current"));
+        covered=step.seconds*fraction;q=(a+(b-a)*fraction/2)*covered/3600;
+        if(step.energyValid){
+            const double pa=a*prior.value("voltage"),pb=b*s.value("voltage");
+            energy=covered;e=(pa+(pb-pa)*fraction/2)*covered/3600000;
+        }
+    }
+    QVariant endSoc=s.values.value("soc");
+    if(fraction<1){
+        endSoc=havePrior&&prior.has("soc")&&s.has("soc")&&step.breakReason.isEmpty()?
+            QVariant(prior.value("soc")+(s.value("soc")-prior.value("soc"))*fraction):QVariant();
+    }
+    if(!execute("INSERT INTO test_samples VALUES(?,?)",QVariantList()<<testId<<sampleId))return false;
+    return execute("UPDATE capacity_tests SET last_ms=?,last_mono=?,elapsed_s=?,samples=samples+1,"
+        "discharge_mah=discharge_mah+?,charge_mah=charge_mah+?,discharge_mwh=discharge_mwh+?,charge_mwh=charge_mwh+?,"
+        "integrated_s=integrated_s+?,energy_s=energy_s+?,end_soc=?,stable_soc=?,gaps=gaps+? WHERE id=?",
+        QVariantList()<<s.utc-(s.mono-endpoint)<<endpoint<<elapsed
+        <<(s.mode=="discharge"?q:0)<<(s.mode=="charge"?q:0)<<(s.mode=="discharge"?e:0)<<(s.mode=="charge"?e:0)
+        <<covered<<energy<<endSoc<<int(stable)<<int(havePrior&&(!step.breakReason.isEmpty()||!step.chargeValid))<<testId);
+}
+bool Store::finishTest(const QString &reason,bool completed){
+    if(testId.isEmpty())return true;
+    QVariantList rows=query("SELECT * FROM capacity_tests WHERE id=?",QVariantList()<<testId);
+    if(rows.isEmpty())return false;
+    QVariantMap t=rows.first().toMap();QVariant estimate;
+    const double span=t["mode"]=="charge"?t["end_soc"].toDouble()-t["start_soc"].toDouble():t["start_soc"].toDouble()-t["end_soc"].toDouble();
+    const double q=t["mode"]=="charge"?t["charge_mah"].toDouble():t["discharge_mah"].toDouble();
+    const double elapsed=t["elapsed_s"].toDouble(),coverage=elapsed>0?t["integrated_s"].toDouble()/elapsed:0;
+    if(completed&&t["samples"].toInt()>=2&&t["stable_soc"].toBool()&&!t["start_soc"].isNull()&&!t["end_soc"].isNull()
+        &&span>=30&&coverage>=0.95&&coverage<=1.001&&q>0&&q*100/span>=1&&q*100/span<=20000)estimate=q*100/span;
+    bool ok=execute("BEGIN IMMEDIATE");
+    if(ok)ok=execute("UPDATE capacity_tests SET end_ms=last_ms,status=?,reason=?,capacity=? WHERE id=?",
+        QVariantList()<<(completed?"completed":"interrupted")<<reason<<estimate<<testId);
+    if(ok)ok=execute("UPDATE sessions SET end_ms=last_ms,reason=? WHERE id=?",QVariantList()<<reason<<session);
+    if(ok)ok=execute("COMMIT");
+    if(!ok){execute("ROLLBACK");return false;}
+    testId.clear();session=0;havePrevious=false;return true;
 }
 }
