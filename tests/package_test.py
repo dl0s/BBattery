@@ -9,7 +9,7 @@ class PackageTest(unittest.TestCase):
         root=ET.parse(ROOT/'bar-descriptor.xml').getroot()
         ns={'q':'http://www.qnx.com/schemas/application/1.0'}
         self.assertEqual(root.find('q:id',ns).text,'top.blaccat.BBattery')
-        self.assertEqual(root.find('q:buildId',ns).text,'8')
+        self.assertEqual(root.find('q:buildId',ns).text,'9')
         self.assertNotIn('run_when_backgrounded',[p.text for p in root.findall('q:permission',ns)])
     def test_bar_matches_current_sources(self):
         with zipfile.ZipFile(ROOT/'build/BBattery.bar') as bar:

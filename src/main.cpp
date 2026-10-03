@@ -11,7 +11,7 @@
 
 int main(int argc,char **argv){
     const qint64 startup=Battery::monoMillis();
-    std::fputs("BBattery 0.1.0.8 startup\n",stderr);std::fflush(stderr);
+    std::fputs("BBattery 0.1.0.9 startup\n",stderr);std::fflush(stderr);
     bb::cascades::Application app(argc,argv);
     std::fputs("BBattery application: ready\n",stderr);std::fflush(stderr);
     QTextCodec::setCodecForCStrings(QTextCodec::codecForName("UTF-8"));
@@ -26,7 +26,7 @@ int main(int argc,char **argv){
         app.setScene(page);
     }else{
         backend.setScene(pane);app.setScene(pane);
-        std::fputs("BBattery 0.1.0.8 native scene ready\n",stderr);
+        std::fputs("BBattery 0.1.0.9 native scene ready\n",stderr);
         std::fprintf(stderr,"BBattery scene prepared: %lld ms\n",static_cast<long long>(Battery::monoMillis()-startup));std::fflush(stderr);
     }
     return app.exec();

@@ -3,7 +3,7 @@
     <id>top.blaccat.BBattery</id>
     <name>BBattery</name>
     <versionNumber>0.1.0</versionNumber>
-    <buildId>8</buildId>
+    <buildId>9</buildId>
     <description>Timed battery capacity tests with persistent battery markers</description>
     <author>Local Developer</author>
     <icon><image>icon.png</image></icon>

@@ -1,15 +1,18 @@
 #include "store.h"
+#include "collector_state.h"
 #include <QCoreApplication>
 #include <QFile>
 #include <QDir>
 #include <QUuid>
 #include <QSettings>
+#include <QCryptographicHash>
 #include <bps/bps.h>
 #include <bps/battery.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/file.h>
+#include <sys/wait.h>
 #include <signal.h>
 #include <grp.h>
 #include <cstdio>
@@ -246,11 +249,74 @@ bool intervalTests(QString *report){
     *report+=ok?"PASS: interval test storage and measurement boundaries\n":"FAIL: interval test storage and measurement boundaries\n";
     return ok;
 }
+bool durabilityTests(QString *report){
+    const QString path=QDir::tempPath()+QString("/bbattery-durable-%1.sqlite").arg(getpid());bool ok=true;
+    {
+        Battery::Store db;ok=db.open(path,true);
+        Battery::Sample s;s.utc=100000;s.mono=100000;s.run="durability";s.ready=true;s.batteryId=244;s.interval=10;
+        s.mode="discharge";s.raw="raw";s.values["soc"]=90;s.values["current"]=-360;s.values["voltage"]=4000;
+        ok=db.execute("CREATE TEMP TRIGGER reject_ack BEFORE INSERT ON test_control BEGIN SELECT RAISE(ABORT,'ack fault'); END")&&ok;
+        ok=testCheck(!db.startTest("original","legacy","A",60,s)&&db.runningTest().isEmpty()
+            &&db.query("SELECT id FROM capacity_tests").isEmpty()&&db.query("SELECT id FROM samples").isEmpty(),
+            "start acknowledgement failure rolls back test, sample and memory",report)&&ok;
+        ok=db.execute("DROP TRIGGER reject_ack")&&db.startTest("original","legacy","A",60,s)&&ok;
+        ok=testCheck(!db.startTest("original","legacy","A",60,s)&&db.query("SELECT id FROM samples").size()==1
+            &&db.query("SELECT id FROM capacity_tests").size()==1,"accepted request cannot create a duplicate test",report)&&ok;
+        QVariantList before=db.query("SELECT * FROM capacity_tests");s.utc+=10000;s.mono+=10000;
+        ok=db.execute("CREATE TEMP TRIGGER reject_ack BEFORE INSERT ON test_control BEGIN SELECT RAISE(ABORT,'ack fault'); END")&&ok;
+        ok=testCheck(!db.finishTest("manual",true,"stop-original",&s)&&db.runningTest()=="original"
+            &&db.query("SELECT * FROM capacity_tests")==before&&db.query("SELECT id FROM samples").size()==1,
+            "stop acknowledgement failure rolls back endpoint and completion",report)&&ok;
+        ok=db.execute("DROP TRIGGER reject_ack")&&db.finishTest("manual",true,"stop-original",&s)&&ok;
+        ok=testCheck(db.runningTest().isEmpty()&&db.query("SELECT request_id FROM test_control").value(0).toMap()["request_id"]=="stop-original"
+            &&db.query("SELECT id FROM samples").size()==2,"stop result and acknowledgement commit together",report)&&ok;
+        ok=db.execute("CREATE TABLE budget_probe(data BLOB)")&&ok;
+        qint64 pages=db.query("PRAGMA page_count").value(0).toMap()["page_count"].toLongLong();
+        ok=db.execute(QString("PRAGMA max_page_count=%1").arg(pages))&&ok;
+        ok=testCheck(!db.execute("INSERT INTO budget_probe VALUES(zeroblob(1048576))")
+            &&db.query("SELECT id FROM samples").size()==2&&db.query("PRAGMA quick_check").value(0).toMap().values().contains("ok"),
+            "SQLite storage limit rejects growth and preserves completed data",report)&&ok;
+    }
+    QFile::remove(path);QFile::remove(path+"-journal");return ok;
+}
+bool readinessTests(QString *report){
+    const QString dir=QDir::tempPath()+QString("/bbattery-ready-%1").arg(getpid());QDir().mkpath(dir);
+    const QByteArray file=QFile::encodeName(dir+"/collector.lock");
+    int lock=::open(file.constData(),O_CREAT|O_RDWR,0600);if(lock<0)return false;::close(lock);
+    QVariantMap state;state["pid"]=qint64(getpid());state["run_id"]="isolated";state["euid"]=qint64(geteuid());state["mono_ms"]=Battery::monoMillis();
+    bool ok=testCheck(Battery::collectorHealth(dir,state)==Battery::CollectorStopped,"fresh heartbeat without held lock is stopped",report);
+    int channel[2];if(pipe(channel)!=0)return false;
+    pid_t child=fork();
+    if(child==0){
+        ::close(channel[0]);int held=::open(file.constData(),O_RDWR);
+        bool ready=held>=0&&flock(held,LOCK_EX|LOCK_NB)==0&&Battery::writeCollectorInstance(dir,"isolated");
+        char result=ready?'1':'0';::write(channel[1],&result,1);::close(channel[1]);
+        if(ready)pause();_exit(ready?0:1);
+    }
+    ::close(channel[1]);char result='0';if(child>0)::read(channel[0],&result,1);::close(channel[0]);
+    if(child>0&&result=='1'){
+        state["pid"]=qint64(child);state["mono_ms"]=Battery::monoMillis();
+        ok=testCheck(Battery::collectorHealth(dir,state)==Battery::CollectorReady,"held lock, live instance and fresh business heartbeat are ready",report)&&ok;
+        state["mono_ms"]=Battery::monoMillis()+60000;
+        ok=testCheck(Battery::collectorHealth(dir,state)!=Battery::CollectorReady,"future monotonic heartbeat is rejected",report)&&ok;
+        state["mono_ms"]=Battery::monoMillis()-60000;
+        ok=testCheck(Battery::collectorHealth(dir,state)!=Battery::CollectorReady,"stale heartbeat is rejected",report)&&ok;
+        state["mono_ms"]=Battery::monoMillis();state["pid"]=qint64(getpid());
+        ok=testCheck(Battery::collectorHealth(dir,state)!=Battery::CollectorReady,"unrelated live PID is rejected",report)&&ok;
+        lock=::open(file.constData(),O_RDWR);
+        ok=testCheck(lock>=0&&flock(lock,LOCK_EX|LOCK_NB)!=0,"second process cannot take collector lock",report)&&ok;
+        if(lock>=0)::close(lock);
+    }else ok=false;
+    if(child>0){kill(child,SIGTERM);waitpid(child,0,0);}
+    ok=testCheck(Battery::collectorHealth(dir,state)==Battery::CollectorStopped,"crashed instance releases persistent lock without deletion",report)&&ok;
+    QFile::remove(dir+"/collector.instance");QFile::remove(dir+"/collector.lock");QDir().rmdir(dir);return ok;
+}
 }
 int main(int argc,char **argv){
     QCoreApplication app(argc,argv);QStringList args=app.arguments();
     if(args.contains("--self-test")){
         QString report;bool ok=Battery::selfTest(&report);ok=storageTests(&report)&&ok;ok=batteryTests(&report)&&ok;ok=intervalTests(&report)&&ok;
+        ok=durabilityTests(&report)&&ok;ok=readinessTests(&report)&&ok;
         std::fputs(report.toUtf8().constData(),stdout);return ok?0:1;
     }
     int index=args.indexOf("--data");if(index<0 || index+1>=args.size()){std::fputs("--data is required\n",stderr);return 2;}
@@ -268,18 +334,31 @@ int main(int argc,char **argv){
         }
     }
     if(geteuid()==0){std::fputs("Collector refuses persistent UID 0\n",stderr);return 3;}
+    if(args.contains("--status")){
+        Battery::Store reader;QVariantMap state;bool readable=reader.open(dir+"/history.sqlite",false);
+        if(readable)state=reader.query("SELECT * FROM collector_state WHERE id=1").value(0).toMap();
+        Battery::CollectorHealth health=Battery::collectorHealth(dir,state);
+        if(!readable&&QFile::exists(dir+"/history.sqlite"))health=Battery::CollectorUnknown;
+        const bool running=readable&&!reader.query("SELECT id FROM capacity_tests WHERE status='running' LIMIT 1").isEmpty();
+        QSettings intent(dir+"/settings.ini",QSettings::IniFormat);
+        const QString request=intent.value("test/request").toString();
+        const QString handled=readable?reader.query("SELECT request_id FROM test_control WHERE id=1").value(0).toMap()["request_id"].toString():QString();
+        std::printf("health=%d\npid=%lld\nrunning=%d\npending=%d\n",int(health),state.value("pid").toLongLong(),int(running),int(!request.isEmpty()&&request!=handled));
+        return int(health);
+    }
     umask(0077);QDir().mkpath(dir);
-    int lock=::open(QFile::encodeName(dir+"/collector.lock").constData(),O_CREAT|O_RDWR,0600);
+    int lock=Battery::openCollectorLock(dir,true);
     if(lock<0 || flock(lock,LOCK_EX|LOCK_NB)!=0){
         std::fprintf(stderr,"Collector lock unavailable: %s\n",std::strerror(errno));return 4;
     }
     QFile pid(dir+"/collector.pid");if(pid.open(QIODevice::WriteOnly)){pid.write(QByteArray::number(getpid()));pid.close();}
-    signal(SIGTERM,stop);signal(SIGINT,stop);signal(SIGHUP,SIG_IGN);
+    signal(SIGTERM,stop);signal(SIGINT,stop);signal(SIGHUP,SIG_IGN);signal(SIGPIPE,SIG_IGN);
     Battery::Store db;if(!db.open(dir+"/history.sqlite",true)){std::fputs(db.error().toUtf8().constData(),stderr);return 5;}
     if(bps_initialize()!=BPS_SUCCESS){std::fputs("BPS initialization failed\n",stderr);return 6;}
     const QString run=QUuid::createUuid().toString();qint64 next=0,lastHeartbeat=0,deadline=0;
+    if(!Battery::writeCollectorInstance(dir,run)){std::fputs("Collector instance persistence failed\n",stderr);return 7;}
     QString failure,activeKey;QMap<QString,QString> labels;
-    std::fprintf(stderr,"BBattery collector 0.1.0.8 interval tests; pid=%d euid=%d\n",int(getpid()),int(geteuid()));
+    std::fprintf(stderr,"BBattery collector 0.1.0.9 interval tests; pid=%d euid=%d\n",int(getpid()),int(geteuid()));
     while(!stopping){
         QSettings settings(dir+"/settings.ini",QSettings::IniFormat);
         settings.beginGroup("batteries");QStringList keys=settings.childKeys();settings.endGroup();
@@ -303,14 +382,23 @@ int main(int argc,char **argv){
         qint64 now=Battery::monoMillis();
         if(!request.isEmpty()&&request!=handled){
             bool ok=false;QString note;QString operation=settings.value("test/operation").toString();
-            if(settings.value("test/expires").toLongLong()<Battery::utcMillis())note=QString::fromUtf8("操作已过期，请重试");
+            const QString parameters=operation+"\n"+QString::number(settings.value("test/seconds").toInt())+"\n"+QString::number(interval)+"\n"+settings.value("test/battery").toString()+"\n"+settings.value("test/target").toString();
+            const QString digest=QString::fromLatin1(QCryptographicHash::hash(parameters.toUtf8(),QCryptographicHash::Sha1).toHex());
+            const QVariantList priorTest=db.query("SELECT battery_key,requested_s FROM capacity_tests WHERE id=?",QVariantList()<<request);
+            if(settings.value("test/digest").toString()!=digest)note=QString::fromUtf8("操作参数校验失败，请重新操作");
+            else if(operation=="start"&&!priorTest.isEmpty()){
+                ok=priorTest[0].toMap()["battery_key"]==settings.value("test/battery")
+                   &&priorTest[0].toMap()["requested_s"].toInt()==settings.value("test/seconds").toInt();
+                note=QString::fromUtf8(ok?"原测试已受理，请查看测试结果":"原编号参数不一致，操作已拒绝");
+            }
+            else if(settings.value("test/expires").toLongLong()<Battery::utcMillis())note=QString::fromUtf8("操作已过期，请重试");
             else if(operation=="start"){
                 if(!db.runningTest().isEmpty())note=QString::fromUtf8("已有测试正在进行");
                 else if(!batteryReady||settings.value("test/battery").toString()!=activeKey)note=QString::fromUtf8("电池标记尚未就绪");
                 else{
                     Battery::Sample s=capture(run,interval);
                     ok=db.startTest(request,activeKey,labels.value(activeKey),settings.value("test/seconds").toInt(),s);
-                    note=ok?QString::fromUtf8("测试已开始"):QString::fromUtf8("无法开始：请保持充电或放电，并检查电池读数");
+                    note=ok?QString::fromUtf8("测试已开始"):QString::fromUtf8("无法开始：")+db.error().left(160);
                     if(ok){deadline=db.testDeadline();next=s.mono+qint64(interval)*1000;failure=s.error;}
                 }
             }else if(operation=="stop"){
@@ -323,11 +411,13 @@ int main(int argc,char **argv){
                     if(s.batteryId!=prior["battery_id"].toInt())reason="battery-changed";
                     else if(qAbs((s.utc-prior["utc_ms"].toLongLong())-(s.mono-prior["mono_ms"].toLongLong()))>2000)reason="clock-change";
                     else if(!s.ready||s.mode!=t["mode"].toString())reason="state-changed";
-                    ok=reason.isEmpty()?(db.append(s)&&db.finishTest(s.mono>=deadline?"timer":"manual",true)):db.finishTest(reason,false);
+                    ok=reason.isEmpty()?db.finishTest(s.mono>=deadline?"timer":"manual",true,request,&s):db.finishTest(reason,false,request);
                     note=ok?QString::fromUtf8("测试已结束并保存"):QString::fromUtf8("结束失败，请重试");
                 }
             }else note=QString::fromUtf8("未知测试操作");
-            if(!db.execute("INSERT OR REPLACE INTO test_control VALUES(1,?,?,?)",QVariantList()<<request<<int(ok)<<note))failure=db.error();
+            // Successful start/stop and its acknowledgement commit together.
+            if(db.query("SELECT request_id FROM test_control WHERE id=1").value(0).toMap()["request_id"]!=request
+               &&!db.execute("INSERT OR REPLACE INTO test_control VALUES(1,?,?,?)",QVariantList()<<request<<int(ok)<<note))failure=db.error();
             lastHeartbeat=0;
         }
         now=Battery::monoMillis();

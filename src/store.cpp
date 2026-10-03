@@ -5,6 +5,7 @@
 #include <QDir>
 #include <QUuid>
 #include <unistd.h>
+#include <sys/statvfs.h>
 #include <algorithm>
 
 namespace Battery {
@@ -80,12 +81,16 @@ QVariantList Store::query(const QString &sql,const QVariantList &values){
 }
 bool Store::open(const QString &path,bool writer){
     if(db) return true;
+    databasePath=path;
     int flags=writer?(SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE):SQLITE_OPEN_READONLY;
     if(sqlite3_open_v2(QFile::encodeName(path).constData(),&db,flags,0)!=SQLITE_OK){
         failure=db?QString::fromUtf8(sqlite3_errmsg(db)):"Database open failed";if(db)sqlite3_close(db);db=0;return false;
     }
     sqlite3_busy_timeout(db,writer?2000:500);
     if(!writer) return execute("PRAGMA query_only=ON");
+    const qint64 pages=query("PRAGMA page_count").value(0).toMap().value("page_count").toLongLong();
+    const qint64 pageSize=query("PRAGMA page_size").value(0).toMap().value("page_size").toLongLong();
+    if(pageSize<=0||!execute(QString("PRAGMA max_page_count=%1").arg(qMax(pages,Q_INT64_C(67108864)/pageSize))))return false;
     // DELETE journaling supports read-only clients on this legacy SQLite runtime.
     const char *schema=
         "PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; BEGIN IMMEDIATE;"
@@ -206,7 +211,7 @@ bool Store::append(const Sample &s){
     const QString savedBreak=pendingBreak;
     Step step;if(havePrevious)step=integrate(previous,s);
     QString breakReason=havePrevious?step.breakReason:pendingBreak;
-    bool ok=execute("BEGIN IMMEDIATE");
+    bool ok=execute("SAVEPOINT append_sample");
     if(!ok)return false;
     if(session && (!breakReason.isEmpty() || previous.mode!=s.mode))
         ok=closeSession(breakReason.isEmpty()?"state-changed":breakReason);
@@ -242,9 +247,9 @@ bool Store::append(const Sample &s){
         ok=recordEvent(s,connected(s.charger)?"power-connected":"power-disconnected",
             QString::fromUtf8(connected(s.charger)?"接入外部电源":"断开外部电源"));
     if(ok&&breakReason=="battery-marker-changed")ok=recordEvent(s,"battery-marker-changed",QString::fromUtf8("切换电池标记"));
-    if(ok)ok=execute("COMMIT");
+    if(ok)ok=execute("RELEASE append_sample");
     if(!ok){
-        execute("ROLLBACK");previous=savedPrevious;havePrevious=savedHave;session=savedSession;
+        execute("ROLLBACK TO append_sample");execute("RELEASE append_sample");previous=savedPrevious;havePrevious=savedHave;session=savedSession;
         count=savedCount;startSoc=savedStartSoc;lastSoc=savedLastSoc;stableSoc=savedStable;
         mah=savedMah;mwh=savedMwh;covered=savedCovered;energyCovered=savedEnergyCovered;startMono=savedStartMono;
         pendingBreak=savedBreak;
@@ -314,17 +319,28 @@ bool Store::heartbeat(const QString &run,int interval,bool paused,const QString 
 }
 
 bool Store::startTest(const QString &id,const QString &key,const QString &label,int seconds,const Sample &first){
+    const qint64 pages=query("PRAGMA page_count").value(0).toMap().value("page_count").toLongLong();
+    const qint64 pageSize=query("PRAGMA page_size").value(0).toMap().value("page_size").toLongLong();
+    struct statvfs space;
+    if(pages*pageSize>=Q_INT64_C(62914560)||statvfs(QFile::encodeName(databasePath).constData(),&space)!=0
+       ||quint64(space.f_bavail)*quint64(space.f_frsize)<Q_UINT64_C(16777216)){
+        failure="History or free-space budget exceeded; export history before a new test";return false;
+    }
     if(id.isEmpty()||seconds<60||seconds>86400||!testId.isEmpty()||!first.ready||
        !first.has("current")||(first.mode!="charge"&&first.mode!="discharge")){
         failure="Battery must be charging or discharging; duration must be 1-1440 minutes";return false;
     }
-    if(!setBattery(key,label)||!closeSession("test-started"))return false;
-    if(!execute("INSERT INTO capacity_tests(id,battery_key,start_ms,start_mono,deadline_mono,requested_s,last_ms,last_mono,status,mode,start_soc,end_soc) "
+    Store saved=*this;saved.db=0;
+    if(!execute("SAVEPOINT start_test"))return false;
+    bool ok=setBattery(key,label)&&closeSession("test-started");
+    if(ok)ok=execute("INSERT INTO capacity_tests(id,battery_key,start_ms,start_mono,deadline_mono,requested_s,last_ms,last_mono,status,mode,start_soc,end_soc) "
         "VALUES(?,?,?,?,?,?,?,?,'running',?,?,?)",QVariantList()<<id<<key<<first.utc<<first.mono
-        <<first.mono+qint64(seconds)*1000<<seconds<<first.utc<<first.mono<<first.mode<<first.values.value("soc")<<first.values.value("soc")))return false;
-    testId=id;
-    if(append(first))return true;
-    finishTest("storage-error",false);return false;
+        <<first.mono+qint64(seconds)*1000<<seconds<<first.utc<<first.mono<<first.mode<<first.values.value("soc")<<first.values.value("soc"));
+    if(ok){testId=id;ok=append(first);}
+    if(ok)ok=execute("INSERT OR REPLACE INTO test_control VALUES(1,?,1,?)",QVariantList()<<id<<QString::fromUtf8("测试已开始"));
+    if(ok)ok=execute("RELEASE start_test");
+    if(!ok){QString error=failure;execute("ROLLBACK TO start_test");execute("RELEASE start_test");sqlite3 *connection=db;*this=saved;db=connection;failure=error;}
+    return ok;
 }
 qint64 Store::testDeadline()const{
     // The collector owns this connection and reads only one indexed row.
@@ -367,22 +383,25 @@ bool Store::appendTest(const Sample &s,const Sample &prior,bool havePrior,const 
         <<(s.mode=="discharge"?q:0)<<(s.mode=="charge"?q:0)<<(s.mode=="discharge"?e:0)<<(s.mode=="charge"?e:0)
         <<covered<<energy<<endSoc<<int(stable)<<int(havePrior&&(!step.breakReason.isEmpty()||!step.chargeValid))<<testId);
 }
-bool Store::finishTest(const QString &reason,bool completed){
+bool Store::finishTest(const QString &reason,bool completed,const QString &request,const Sample *last){
     if(testId.isEmpty())return true;
+    Store saved=*this;saved.db=0;
+    if(!execute("SAVEPOINT finish_test"))return false;
+    bool ok=!last||append(*last);
     QVariantList rows=query("SELECT * FROM capacity_tests WHERE id=?",QVariantList()<<testId);
-    if(rows.isEmpty())return false;
-    QVariantMap t=rows.first().toMap();QVariant estimate;
+    if(rows.isEmpty())ok=false;
+    QVariantMap t=rows.value(0).toMap();QVariant estimate;
     const double span=t["mode"]=="charge"?t["end_soc"].toDouble()-t["start_soc"].toDouble():t["start_soc"].toDouble()-t["end_soc"].toDouble();
     const double q=t["mode"]=="charge"?t["charge_mah"].toDouble():t["discharge_mah"].toDouble();
     const double elapsed=t["elapsed_s"].toDouble(),coverage=elapsed>0?t["integrated_s"].toDouble()/elapsed:0;
     if(completed&&t["samples"].toInt()>=2&&t["stable_soc"].toBool()&&!t["start_soc"].isNull()&&!t["end_soc"].isNull()
         &&span>=30&&coverage>=0.95&&coverage<=1.001&&q>0&&q*100/span>=1&&q*100/span<=20000)estimate=q*100/span;
-    bool ok=execute("BEGIN IMMEDIATE");
     if(ok)ok=execute("UPDATE capacity_tests SET end_ms=last_ms,status=?,reason=?,capacity=? WHERE id=?",
         QVariantList()<<(completed?"completed":"interrupted")<<reason<<estimate<<testId);
     if(ok)ok=execute("UPDATE sessions SET end_ms=last_ms,reason=? WHERE id=?",QVariantList()<<reason<<session);
-    if(ok)ok=execute("COMMIT");
-    if(!ok){execute("ROLLBACK");return false;}
+    if(ok&&!request.isEmpty())ok=execute("INSERT OR REPLACE INTO test_control VALUES(1,?,1,?)",QVariantList()<<request<<QString::fromUtf8("测试已结束并保存"));
+    if(ok)ok=execute("RELEASE finish_test");
+    if(!ok){QString error=failure;execute("ROLLBACK TO finish_test");execute("RELEASE finish_test");sqlite3 *connection=db;*this=saved;db=connection;failure=error;return false;}
     testId.clear();session=0;havePrevious=false;return true;
 }
 }

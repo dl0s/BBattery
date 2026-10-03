@@ -1,4 +1,5 @@
 #include "backend.h"
+#include "collector_state.h"
 #include <bb/cascades/Application>
 #include <bb/cascades/Window>
 #include <bb/system/Screenshot>
@@ -8,6 +9,7 @@
 #include <QDateTime>
 #include <QTextStream>
 #include <QSettings>
+#include <QCryptographicHash>
 #include <QThread>
 #include <QMetaObject>
 #include <QUuid>
@@ -102,6 +104,8 @@ Backend::Backend():records(new bb::cascades::ArrayDataModel(this)),reader(new Te
     bb::data::JsonDataAccess json;QVariantMap identity;identity["pid"]=qint64(getpid());identity["uid"]=qint64(getuid());identity["euid"]=qint64(geteuid());
     json.save(identity,QDir::currentPath()+"/data/gui-identity.json");
     message=QString::fromUtf8("正在连接测试采集器");loadBatteries();
+    QSettings intent(directory+"/settings.ini",QSettings::IniFormat);
+    pendingRequest=intent.value("test/request").toString();pendingExpires=intent.value("test/expires").toLongLong();
     connect(&refreshTimer,SIGNAL(timeout()),this,SLOT(refresh()));refreshTimer.start(10000);
     connect(&diagnosticTimer,SIGNAL(timeout()),this,SLOT(diagnostic()));diagnosticTimer.start(1000);
     connect(reader,SIGNAL(finished()),this,SLOT(readReady()));connect(exporter,SIGNAL(finished()),this,SLOT(exportReady()));
@@ -146,12 +150,14 @@ void Backend::readReady(){
     reader->wait();busy=false;
     if(reader->key!=viewedBattery||reader->activeKey!=activeBattery||reader->selected!=selectedId){refresh();return;}
     const bool previouslyReady=collectorReady;
-    collectorReady=reader->error.isEmpty()&&!reader->state.isEmpty()&&Battery::monoMillis()-reader->state["mono_ms"].toLongLong()<45000;
-    if(!collectorReady)message=QString::fromUtf8("采集器未就绪，请稍候");
-    else if(!pendingRequest.isEmpty()&&reader->control["request_id"]==pendingRequest){
+    collectorReady=reader->error.isEmpty()&&Battery::collectorHealth(directory,reader->state)==Battery::CollectorReady;
+    if(reader->error.isEmpty()&&!pendingRequest.isEmpty()&&reader->control["request_id"]==pendingRequest){
         message=reader->control["message"].toString();pendingRequest.clear();emit notified(message);
     }else if(!pendingRequest.isEmpty()&&Battery::utcMillis()>pendingExpires){
-        pendingRequest.clear();message=QString::fromUtf8("操作未确认，请重试");emit notified(message);
+        message=QString::fromUtf8("操作待确认，恢复连接后继续核对");
+    }else if(!collectorReady){
+        message=reader->error.isEmpty()?QString::fromUtf8("采集器未就绪，请重新连接采集服务"):
+            QString::fromUtf8("采集数据暂不可用：")+reader->error.left(200);
     }else if(!previouslyReady)message=QString::fromUtf8("就绪 · 仅在测试期间采样");
     collectorState=reader->state;currentTest=formatTest(reader->active);selected=formatTest(reader->detail);current=reader->sample;
     current["socText"]=metric(current["soc"],0,"%");current["currentText"]=metric(current["current"],0," mA");
@@ -169,6 +175,8 @@ bool Backend::request(const QString &operation,int seconds,int interval){
     QSettings settings(directory+"/settings.ini",QSettings::IniFormat);
     settings.setValue("test/operation",operation);settings.setValue("test/seconds",seconds);settings.setValue("test/interval",interval);
     settings.setValue("test/battery",activeBattery);settings.setValue("test/target",currentTest["id"]);
+    settings.setValue("test/digest",QString::fromLatin1(QCryptographicHash::hash(
+        (operation+"\n"+QString::number(seconds)+"\n"+QString::number(interval)+"\n"+activeBattery+"\n"+currentTest["id"].toString()).toUtf8(),QCryptographicHash::Sha1).toHex()));
     pendingExpires=Battery::utcMillis()+20000;settings.setValue("test/expires",pendingExpires);settings.setValue("test/request",id);settings.sync();
     if(settings.status()!=QSettings::NoError){message=QString::fromUtf8("测试操作保存失败");emit changed();return false;}
     pendingRequest=id;message=QString::fromUtf8("正在等待采集器确认");refreshTimer.setInterval(1000);emit changed();refresh();return true;

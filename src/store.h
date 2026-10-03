@@ -21,7 +21,7 @@ public:
     bool setBattery(const QString &key,const QString &label);
     bool registerBattery(const QString &key,const QString &label);
     bool startTest(const QString &id,const QString &key,const QString &label,int seconds,const Sample &first);
-    bool finishTest(const QString &reason,bool completed);
+    bool finishTest(const QString &reason,bool completed,const QString &request=QString(),const Sample *last=0);
     QString runningTest() const { return testId; }
     qint64 testDeadline() const;
     bool execute(const QString &sql,const QVariantList &bindings=QVariantList());
@@ -29,6 +29,7 @@ public:
 private:
     sqlite3 *db;
     QString failure;
+    QString databasePath;
     Sample previous;
     bool havePrevious;
     qint64 session;

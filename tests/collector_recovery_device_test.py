@@ -5,10 +5,15 @@ import re
 import sqlite3
 import sys
 import time
+import uuid
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 import device
+import collector_release
+
+EVIDENCE = device.BUILD / ('acceptance-0.1.0.9-' + uuid.uuid4().hex[:12])
+EVIDENCE.mkdir(parents=True, exist_ok=False)
 
 
 def wait_state(predicate, timeout=35):
@@ -25,12 +30,12 @@ def wait_state(predicate, timeout=35):
 
 def backup(name):
     response = device.app_call("backup")
-    destination = device.BUILD / name
+    destination = EVIDENCE / name
     device.scp(destination, response["path"], True)
     return destination
 
 
-def test():
+def business_checks(unsigned_before):
     report = {"result": "FAIL", "checks": [], "actualDeviceReboot": False}
     test_id = None
     original = wait_state(lambda state: state["ready"] and not state["refreshing"])
@@ -44,6 +49,9 @@ def test():
     try:
         before = backup("collector-repair-before.sqlite")
         evidence = json.loads((device.BUILD / "collector-evidence.json").read_text(encoding="utf-8"))
+        _, _, native = device.installed_collector(str(evidence['uid']), str(evidence['gid']))
+        (EVIDENCE / 'native-tests.txt').write_text(native, encoding='utf-8')
+        check("packaged native durability, readiness and storage self-tests pass", "FAIL:" not in native)
         check("independent collector and GUI use the sandbox UID", evidence["uid"] == original["euid"] != 0)
         check("service configuration is stored under the persistent account", evidence["serviceDirectory"] == device.SERVICE)
         boot = device.ssh("cat " + device.quote(evidence["bootHook"]))
@@ -55,29 +63,57 @@ def test():
         _, _, sandbox = device.receipt()
         pid_path = sandbox + "/data/battery/collector.pid"
         pid = device.ssh("cat " + device.quote(pid_path)).strip()
-        check("repeated boot startup keeps the existing collector", pid == str(evidence["pid"]))
-        supervisor = device.ssh("cat " + device.quote(device.SERVICE + "/supervisor.pid")).strip()
-        assert supervisor.isdigit() and "bbattery-supervisor" in device.ssh("pidin -p " + supervisor + " ar")
+        check("repeated boot startup keeps the existing collector", pid == str(original["collector"]["pid"]))
+        check("bounded startup leaves no resident BBattery supervisor", "bbattery-supervisor" not in device.ssh("pidin ar"))
         assert evidence["binary"] in device.ssh("pidin -p " + pid + " ar")
-        device.ssh("kill -TERM " + supervisor + "\nkill -TERM " + pid)
+        lock_path = sandbox + '/data/battery/collector.lock'
+        lock_identity = device.ssh('ls -i ' + device.quote(lock_path)).strip()
+        duplicate = 'on -u {}:{},1000 {} --data {} 2>&1\ncode=$?\nprint "duplicate_exit=$code"'.format(evidence['uid'],evidence['gid'],evidence['binary'],sandbox+'/data/battery')
+        check("duplicate collector is rejected by the real kernel lock", 'duplicate_exit=4' in device.ssh(duplicate))
+        device.ssh("kill -TERM " + pid)
         deadline = time.monotonic() + 20
-        while ("bbattery-supervisor" in device.ssh("pidin -p " + supervisor + " ar", check=False)
-               or evidence["binary"] in device.ssh("pidin -p " + pid + " ar", check=False)):
+        while evidence["binary"] in device.ssh("pidin -p " + pid + " ar", check=False):
             assert time.monotonic() < deadline, "BBattery service did not stop"
             time.sleep(1)
+        stopped = wait_state(lambda state: not state['ready'])
+        check("stopped process cannot remain ready through its recent heartbeat", not stopped['ready'])
         device.ssh(stanza.group(1))
         recovered = wait_state(lambda state: state["ready"] and state["collector"].get("run_id") != original["collector"].get("run_id"))
         new_pid = device.ssh("cat " + device.quote(pid_path)).strip()
         check("installed boot stanza recovers the stopped collector", new_pid.isdigit() and new_pid != pid)
+        check("recovery retains the persistent lock inode", device.ssh('ls -i '+device.quote(lock_path)).strip()==lock_identity)
         check("battery marker is preserved during service recovery", recovered["battery"] == original["battery"] and recovered["batteries"] == original["batteries"])
         idle = backup("collector-repair-idle.sqlite")
         with sqlite3.connect(before) as old, sqlite3.connect(idle) as current:
             check("idle service recovery creates no samples", old.execute("SELECT COUNT(*) FROM samples").fetchone() == current.execute("SELECT COUNT(*) FROM samples").fetchone())
 
-        device.app_call("start-test", minutes=1, interval=10)
+        # Pause only the verified idle collector to exercise durable GUI intent.
+        device.ssh('kill -STOP ' + new_pid)
+        try:
+            device.app_call("start-test", minutes=1, interval=10)
+            pending = device.app_call('state')
+            check("unconfirmed test remains pending", pending['pending'])
+            device.stop_gui()
+            device.launch()
+            pending = device.app_call('state')
+            check("GUI restart reloads the original pending operation", pending['pending'])
+            try:
+                device.app_call('start-test',minutes=1,interval=10)
+                raise AssertionError('A pending test allowed a replacement command')
+            except RuntimeError as error:
+                assert 'GUI operation failed' in str(error)
+                check('pending operation refuses replacement submission', True)
+        finally:
+            device.ssh('kill -CONT ' + new_pid)
+        confirmed = wait_state(lambda state: not state['pending'])
+        if not confirmed['running']:
+            check('expired original operation confirms failure and restores buttons', '\u8fc7\u671f' in confirmed['status'])
+            device.app_call('start-test',minutes=1,interval=10)
         running = wait_state(lambda state: state["running"] and not state["pending"])
         test_id = running["test"]["id"]
         check("real battery test starts with an immediate sample", running["test"]["samples"] >= 1 and running["test"]["battery_key"] == original["battery"]["activeKey"])
+        device.ssh('kill -HUP '+new_pid+'\nkill -PIPE '+new_pid)
+        check('observer hangup and closed-output signal keep the actual collector alive',evidence['binary'] in device.ssh('pidin -p '+new_pid+' ar'))
         device.stop_gui()
         print("Checking the one-minute test while the GUI is closed...", flush=True)
         time.sleep(35)
@@ -90,6 +126,19 @@ def test():
         check("real readings are sampled repeatedly", completed["test"]["samples"] >= 4 and completed["test"]["integrated_s"] > 0)
         check("short SOC range does not fabricate battery capacity", not completed["test"]["estimateReady"])
         final = backup("collector-repair-after.sqlite")
+        baseline = EVIDENCE / 'deployment-baseline.sqlite'
+        device.scp(baseline,device.SERVICE+'/updates/'+evidence['deployment']+'/history.sqlite',True)
+        with sqlite3.connect(baseline) as old, sqlite3.connect(before) as current:
+            for table in ('samples','sessions','snapshots','session_batteries','battery_profiles','capacity_tests'):
+                column=old.execute('PRAGMA table_info('+table+')').fetchall()[0][1]
+                for row in old.execute('SELECT * FROM '+table).fetchall():
+                    saved=current.execute('SELECT * FROM '+table+' WHERE '+column+'=?',(row[0],)).fetchone()
+                    if table=='battery_profiles':
+                        labels={item['key']:item['label'] for item in original['batteries']}
+                        assert saved==(row[0],labels.get(row[0],row[1]))
+                    else:
+                        assert saved==row
+            check('pre-activation history and battery identities retain the current user labels',True)
         with sqlite3.connect(before) as old, sqlite3.connect(final) as current:
             check("SQLite integrity and foreign keys are valid", current.execute("PRAGMA integrity_check").fetchone()[0] == "ok" and not current.execute("PRAGMA foreign_key_check").fetchall())
             for table in ("samples", "sessions", "snapshots", "session_batteries", "battery_profiles", "capacity_tests"):
@@ -113,7 +162,26 @@ def test():
         if test_id and final_state["running"] and final_state["test"].get("id") == test_id:
             device.app_call("stop-test")
             wait_state(lambda state: not state["running"] and not state["pending"])
-        (device.BUILD / "collector-repair-tests.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        report['evidenceDirectory']=str(EVIDENCE)
+        (EVIDENCE / "collector-repair-tests.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        print('Acceptance evidence: '+str(EVIDENCE),flush=True)
+    return report
+
+
+def test():
+    before=collector_release.observe()
+    with device.lease():
+        report=business_checks(before)
+    try:
+        after=collector_release.observe()
+        assert before['frozenHashes']==after['frozenHashes'] and before['unsigned']['service_pid']==after['unsigned']['service_pid'] and not after['unfinished']
+        report['checks'].append('frozen unsigned files and native consumer remain unchanged')
+        report['unsignedBefore']=before['unsigned'];report['unsignedAfter']=after['unsigned']
+        report['result']='PASS'
+    except Exception:
+        report['result']='FAIL';raise
+    finally:
+        (EVIDENCE/'collector-repair-tests.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
 
 
 if __name__ == "__main__":

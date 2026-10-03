@@ -19,7 +19,7 @@ BlackBerry Q10 上的定时电池容量测试工具。界面只有“测试”�
 
 “整电池容量估计”仅在测试已完成、SOC 变化至少 30 个百分点、方向稳定、有效电流积分覆盖至少 95% 时显示。它是按本次 SOC 变化外推的参考值，不能把短时间区间电量当作已校准的整电池容量。
 
-测试记录、逐样本归属与增量结果存储于 SQLite。迁移只新增表/索引，旧样本与电池会话字段不被改写。每次采样和测试结果更新属于同一事务。测试命令有确认、20 秒有效期及防重复标记。
+测试记录、逐样本归属与增量结果存储于 SQLite。旧样本与电池会话字段保留。每次采样和测试结果更新属于同一事务。测试命令保存操作编号与参数摘要，受理前有效期为 20 秒；界面重启继续核对原编号。未确认的操作不会因超时被直接清除。开始、结束测试与成功确认在同一数据库事务中提交。
 
 ## 构建与部署
 
@@ -28,6 +28,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Package
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/test-capacity.ps1
 python -B tests/package_test.py
 python -B tests/device_tools_test.py
+python -B tests/collector_release_test.py
 python -B tools/device.py install
 python -B tests/collector_recovery_device_test.py
 python -B tests/startup_test.py
@@ -35,9 +36,11 @@ python -B tests/startup_test.py
 
 使用 INTROOP_SDK_ROOT（当前 C:\bbdevtools）与 BB10 的 gcc_ntoarmv7le_cpp / libcpp.so.4。部署沿用本机已固定 SSH 主机密钥的 Q10 连接配置。
 
-0.1.0.8 的 BAR 同时包含界面和采集器。`tools/device.py install` 会安装并核对两者、通过系统启动器打开界面、配置独立采集服务、添加或更新 BBattery 启动项，并确认界面已连接数据库和采集器。服务配置保存于持久目录 `/accounts/1000/bbattery-service`，使用应用的 UID/GID 和账户访问组 1000 执行，不依赖以 root 身份执行新建的程序文件。GUI 保持应用沙箱身份。
+0.1.0.9 的 BAR 同时包含界面和采集器。`tools/device.py install` 通过 Autoloader 冻结的设备协调入口和原生 PPS 安装协议部署；已安装且所有资源摘要一致时，核对后完成采集服务激活。持久操作编号在提交前保存，断开后重跑同一命令续查原事务。旧包、启动来源、数据库与设置先备份并核验，再停止服务。新验收使用独立文件，保留失败和超时记录。
 
-切换服务前使用同一采集身份，在应用诊断目录的隔离数据库中执行原生测量、存储、电池身份及定时测试边界检查。`tools/device.py provision` 可单独修复已安装的采集服务；`tools/device.py boot-hook` 可单独补齐启动项。采集服务和界面可分别重启，不需要重启设备。恢复测试只执行 BBattery 的启动段，不执行其他系统启动服务。
+服务配置保存于持久目录 `/accounts/1000/bbattery-service`。启动脚本最多尝试 3 次，随后退出；采集器使用应用 UID/GID 和账户组 1000，保留进程锁，不运行常驻 shell 监护器。界面按真实锁、实例身份和业务心跳判断就绪。`provision` 与 `boot-hook` 使用同一发布意图和保护流程。采集服务和界面可分别恢复，无需重启整台设备。
+
+设备维护遵循本机 `C:/Users/dove/Documents/Autoloader/开发规范与稳定基线保护.md`，保护 unsigned 安装服务 1.0.9。升级、资源上限、恢复命令及实测边界见 [采集器 0.1.0.9 修复记录](docs/collector-0.1.0.9.md)。
 
 ## Q10 修复验证（2026-10-03）
 

@@ -1,5 +1,5 @@
 """Repeated Q10 launches of the simplified interval-test UI."""
-import json,pathlib,re,sys,time
+import json,pathlib,re,sys,time,uuid
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'tools'))
 import device
@@ -26,5 +26,5 @@ def test():
             print('PASS launch '+str(attempt)+' scene='+timing.group(1)+' ms indexedRead='+str(state['readMs'])+' ms',flush=True)
         report['result']='PASS'
     finally:
-        (ROOT/'build/startup-tests.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
+        (ROOT/('build/startup-0.1.0.9-'+uuid.uuid4().hex[:12]+'.json')).write_text(json.dumps(report,indent=2),encoding='utf-8')
 if __name__=='__main__':test()
