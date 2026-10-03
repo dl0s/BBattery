@@ -14,6 +14,7 @@ import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BUILD = ROOT / "build"
+SERVICE = "/accounts/1000/bbattery-service"
 def connection_profile(local_appdata):
     root = pathlib.Path(local_appdata)
     for relative in ("Q10Manager/connection.json", "Q10Deploy/config.json"):
@@ -108,12 +109,16 @@ def install():
     (BUILD / "install-evidence.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
     _, app, _ = receipt()
     with zipfile.ZipFile(bar) as archive:
-        for asset in ("native/bbattery", "native/assets/main.qml", "native/assets/Metric.qml"):
+        for asset in ("native/bbattery", "native/batteryd", "native/assets/main.qml", "native/assets/Metric.qml"):
             copy = BUILD / ("installed-" + asset.rsplit("/", 1)[1])
             scp(copy, app + "/" + asset, True)
             if copy.read_bytes() != archive.read(asset):
                 raise RuntimeError("Installed asset readback mismatch: " + asset)
     print("Installed and verified BBattery " + record["version"], flush=True)
+    launch()
+    provision()
+    install_boot_hook()
+    verify_collector_ready()
 
 
 def launch():
@@ -275,19 +280,53 @@ def stage_collector(binary):
     return remote, digest, registration, tests
 
 
+def verify_collector_ready():
+    expected = json.loads((BUILD / "collector-evidence.json").read_text(encoding="utf-8"))
+    deadline = time.monotonic() + 35
+    while time.monotonic() < deadline:
+        app_call("refresh")
+        state = app_call("state")
+        collector = state.get("collector", {})
+        if (state.get("ready") and collector.get("pid") == expected["pid"] and
+                collector.get("euid") == expected["uid"] and not collector.get("error")):
+            print("Verified GUI connected to the independent collector and database", flush=True)
+            return state
+        time.sleep(1)
+    raise RuntimeError("Installed GUI did not confirm a healthy collector/database connection")
+
+
+def installed_collector(uid, gid):
+    """Run the verified package asset with the app identity, including its self-test."""
+    _, app, sandbox = receipt()
+    remote = app + "/native/batteryd"
+    with zipfile.ZipFile(BUILD / "BBattery.bar") as archive:
+        expected = archive.read("native/batteryd")
+    copy = BUILD / "installed-batteryd"
+    scp(copy, remote, True)
+    if copy.read_bytes() != expected:
+        raise RuntimeError("Installed collector differs from the package; install the current BAR first")
+    temporary = sandbox + "/data/diagnostics/collector-self-test"
+    ssh("mkdir -p " + quote(temporary) + "\nchown " + uid + ":" + gid + " " + quote(temporary) +
+        "\nchmod 700 " + quote(temporary))
+    command = "on -e " + quote("TMPDIR=" + temporary) + " -u " + uid + ":" + gid + ",1000 " + quote(remote) + " --self-test"
+    tests = ssh(command)
+    if "RESULT: PASS" not in tests or "PASS: SQLite" not in tests:
+        raise RuntimeError("Packaged collector measurement/storage checks failed")
+    return remote, hashlib.sha256(expected).hexdigest(), tests
+
+
 def provision():
     require_root()
     uid, gid = gui_owner()
     _, _, sandbox = receipt()
     directory = sandbox + "/data/battery"
-    ssh("mkdir -p /var/bbattery/bin\nchown 0:0 /var/bbattery /var/bbattery/bin\nchmod 700 /var/bbattery /var/bbattery/bin")
-    binary = BUILD / "batteryd"
-    remote, digest, registration, tests = stage_collector(binary)
+    ssh("mkdir -p " + quote(SERVICE) + "\nchown 0:0 " + quote(SERVICE) + "\nchmod 700 " + quote(SERVICE))
+    remote, digest, tests = installed_collector(uid, gid)
     (BUILD / "native-tests.txt").write_text(tests, encoding="utf-8")
     code = """#!/bin/ksh
 # BBATTERY FIXED SUPERVISOR
 umask 077
-STATE=/var/bbattery
+STATE=__STATE__
 remove_lock() {
     [ -d "$STATE/supervisor.lock" ] && [ ! -L "$STATE/supervisor.lock" ] || return 20
     for entry in "$STATE/supervisor.lock"/* "$STATE/supervisor.lock"/.[!.]* "$STATE/supervisor.lock"/..?*; do
@@ -304,33 +343,38 @@ fi
 trap 'remove_lock' EXIT
 trap 'exit 0' TERM INT
 print -r -- "$$" > "$STATE/supervisor.pid"
-/proc/boot/pathtrust __TRUST__ || exit 21
 while :; do
-    __BINARY__ --data __DATA__ --uid __UID__ --gid __GID__ >> "$STATE/service.log" 2>&1
+    on -u __UID__:__GID__,1000 __BINARY__ --data __DATA__ --uid __UID__ --gid __GID__ >> "$STATE/service.log" 2>&1
     sleep 2
 done
-""".replace("__TRUST__", quote("!" + remote)).replace("__BINARY__", quote(remote)).replace(
+""".replace("__STATE__", quote(SERVICE)).replace("__BINARY__", quote(remote)).replace(
         "__DATA__", quote(directory)).replace("__UID__", uid).replace("__GID__", gid)
     script = BUILD / "collector-supervisor.sh"
     script.write_text(code, encoding="utf-8", newline="\n")
-    old_script = ssh("cat /var/bbattery/start.sh", check=False)
-    if old_script:
+    # Migrate only this application's recognized supervisor, retaining the database.
+    for state in (SERVICE, "/var/bbattery"):
+        old_script = ssh("cat " + quote(state + "/start.sh"), check=False)
+        if not old_script:
+            continue
         if "# BBATTERY FIXED SUPERVISOR" not in old_script or directory not in old_script:
             raise RuntimeError("Unrecognized BBattery supervisor; left unchanged")
-        old_supervisor = ssh("cat /var/bbattery/supervisor.pid", check=False).strip()
+        old_supervisor = ssh("cat " + quote(state + "/supervisor.pid"), check=False).strip()
         old_service = ssh("cat " + quote(directory + "/collector.pid"), check=False).strip()
         if old_supervisor.isdigit() and "bbattery-supervisor" in ssh("pidin -p " + old_supervisor + " ar", check=False):
             ssh("kill -TERM " + old_supervisor)
-            if old_service.isdigit() and "/var/bbattery/bin/batteryd-" in ssh("pidin -p " + old_service + " ar", check=False):
-                ssh("kill -TERM " + old_service)
+            if old_service.isdigit():
+                arguments = ssh("pidin -p " + old_service + " ar", check=False)
+                if (" --data " + directory + " --uid ") in arguments and (
+                        "/var/bbattery/bin/batteryd-" in arguments or remote in arguments):
+                    ssh("kill -TERM " + old_service)
             for _ in range(15):
                 if "bbattery-supervisor" not in ssh("pidin -p " + old_supervisor + " ar", check=False):
                     break
                 time.sleep(1)
             else:
                 raise RuntimeError("Old supervisor did not stop; no duplicate launched")
-    upload_verified(script, "/var/bbattery/start.sh")
-    ssh("on -d /bin/ksh -c " + quote(code) + " bbattery-supervisor </dev/null >>/var/bbattery/boot.log 2>&1")
+    upload_verified(script, SERVICE + "/start.sh")
+    ssh("on -d /bin/ksh -c " + quote(code) + " bbattery-supervisor </dev/null >>" + quote(SERVICE + "/boot.log") + " 2>&1")
     deadline = time.monotonic() + 25
     pid = ""
     while time.monotonic() < deadline:
@@ -346,10 +390,11 @@ done
         time.sleep(1)
     else:
         raise RuntimeError("Independent least-privilege collector failed to start: " +
-                           ssh("tail -n 20 /var/bbattery/service.log", check=False) +
-                           ssh("tail -n 20 /var/bbattery/boot.log", check=False))
+                           ssh("tail -n 20 " + quote(SERVICE + "/service.log"), check=False) +
+                           ssh("tail -n 20 " + quote(SERVICE + "/boot.log"), check=False))
     evidence = dict(binary=remote, sha256=digest, data=directory, pid=int(pid), uid=int(uid), gid=int(gid),
-                    identity=identity, pathTrust=registration, samplesInterval=30, collectionMode="interval-tests-only",
+                    identity=identity, serviceDirectory=SERVICE, execution="verified package asset as sandbox UID",
+                    samplesInterval=30, collectionMode="interval-tests-only",
                     rootPolicyChanged=False, existingFileServiceChanged=False, bootVerifiedAfterReboot=False)
     (BUILD / "collector-evidence.json").write_text(json.dumps(evidence, indent=2), encoding="utf-8")
     print("Independent collector started; effective UID " + uid, flush=True)
@@ -367,8 +412,9 @@ def install_boot_hook():
         raise RuntimeError("Unrecognized existing boot source; left unchanged")
     begin = "# BBATTERY COLLECTOR BOOT BEGIN"
     end = "# BBATTERY COLLECTOR BOOT END"
-    block = (begin + "\non -d /bin/ksh -c \"$(cat /var/bbattery/start.sh)\" bbattery-supervisor"
-             " </dev/null >>/var/bbattery/boot.log 2>&1\n" + end + "\n")
+    block = (begin + "\nif [ -r " + SERVICE + "/start.sh ]; then\n"
+             "    on -d /bin/ksh -c \"$(cat " + SERVICE + "/start.sh)\" bbattery-supervisor"
+             " </dev/null >>" + SERVICE + "/boot.log 2>&1\nfi\n" + end + "\n")
     if begin in original:
         expression = re.compile(r"^" + re.escape(begin) + r"\n.*?^" + re.escape(end) + r"\n?", re.M | re.S)
         if len(expression.findall(original)) != 1:
@@ -379,14 +425,14 @@ def install_boot_hook():
     if updated != original:
         patched = BUILD / "boot-source.patched"
         patched.write_text(updated, encoding="utf-8", newline="\n")
-        scp(patched, "/var/bbattery/boot-source.next")
+        scp(patched, SERVICE + "/boot-source.next")
         recheck = BUILD / "boot-source.recheck"
         scp(recheck, upstream, True)
         if recheck.read_bytes() != before.read_bytes():
             raise RuntimeError("Boot source changed concurrently; nothing written")
-        ssh("test -f /var/bbattery/boot-source.before || cp -p " + quote(upstream) +
-            " /var/bbattery/boot-source.before\nchmod 600 /var/bbattery/boot-source.before\n"
-            "cat /var/bbattery/boot-source.next > " + quote(upstream))
+        ssh("test -f " + quote(SERVICE + "/boot-source.before") + " || cp -p " + quote(upstream) +
+            " " + quote(SERVICE + "/boot-source.before") + "\nchmod 600 " + quote(SERVICE + "/boot-source.before") + "\n"
+            "cat " + quote(SERVICE + "/boot-source.next") + " > " + quote(upstream))
         scp(BUILD / "boot-source.readback", upstream, True)
         if (BUILD / "boot-source.readback").read_bytes() != patched.read_bytes():
             raise RuntimeError("Boot hook readback failed")

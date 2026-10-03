@@ -3,6 +3,7 @@ import pathlib
 import sys
 import unittest
 import tempfile
+import zipfile
 from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tools"))
@@ -12,6 +13,69 @@ DNAME = "top.blaccat.BBattery.testDev_at_BBattery8620bde8"
 
 
 class DeviceToolsTest(unittest.TestCase):
+    @patch.object(device, "receipt", return_value=({"dname": DNAME}, "/apps/" + DNAME, "/sandbox"))
+    @patch.object(device, "scp")
+    @patch.object(device, "ssh", return_value="RESULT: PASS\nPASS: SQLite")
+    def test_packaged_collector_is_verified_and_tested_without_root(self, ssh, scp, receipt):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            with zipfile.ZipFile(root / "BBattery.bar", "w") as archive:
+                archive.writestr("native/batteryd", b"packaged-collector")
+            scp.side_effect = lambda local, remote, download: pathlib.Path(local).write_bytes(b"packaged-collector")
+            with patch.object(device, "BUILD", root):
+                remote, digest, report = device.installed_collector("100", "902")
+            self.assertEqual(remote, "/apps/" + DNAME + "/native/batteryd")
+            self.assertEqual(ssh.call_args.args[0], "on -e TMPDIR=/sandbox/data/diagnostics/collector-self-test -u 100:902,1000 " + remote + " --self-test")
+            self.assertEqual(len(digest), 64)
+            self.assertIn("RESULT: PASS", report)
+
+    @patch.object(device, "receipt", return_value=({"dname": DNAME}, "/apps/" + DNAME, ""))
+    @patch.object(device, "scp")
+    @patch.object(device, "ssh")
+    def test_changed_package_asset_is_never_executed(self, ssh, scp, receipt):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            with zipfile.ZipFile(root / "BBattery.bar", "w") as archive:
+                archive.writestr("native/batteryd", b"expected")
+            scp.side_effect = lambda local, remote, download: pathlib.Path(local).write_bytes(b"different")
+            with patch.object(device, "BUILD", root):
+                with self.assertRaisesRegex(RuntimeError, "differs from the package"):
+                    device.installed_collector("100", "902")
+            ssh.assert_not_called()
+
+    @patch.object(device, "receipt", return_value=({"dname": DNAME}, "", ""))
+    @patch.object(device, "require_root")
+    @patch.object(device, "scp")
+    @patch.object(device, "ssh")
+    def test_boot_hook_is_persistent_idempotent_and_preserves_other_services(self, ssh, scp, require_root, receipt):
+        original = "#!/bin/sh\n/usr/sbin/sshd\necho existing-service\n"
+        remote_files = {"boot": original.encode()}
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "collector-evidence.json").write_text("{}", encoding="utf-8")
+            def transfer(local, remote, download=False):
+                if download:
+                    pathlib.Path(local).write_bytes(remote_files["boot"])
+                else:
+                    remote_files["next"] = pathlib.Path(local).read_bytes()
+            def execute(command):
+                if "boot-source.next" in command:
+                    remote_files["boot"] = remote_files["next"]
+                return ""
+            scp.side_effect = transfer
+            ssh.side_effect = execute
+            with patch.object(device, "BUILD", root):
+                device.install_boot_hook()
+                once = remote_files["boot"]
+                mutations = ssh.call_count
+                device.install_boot_hook()
+            self.assertTrue(once.startswith(original.encode()))
+            self.assertEqual(remote_files["boot"], once)
+            self.assertEqual(ssh.call_count, mutations)
+            self.assertEqual(once.count(b"# BBATTERY COLLECTOR BOOT BEGIN"), 1)
+            self.assertIn(device.SERVICE.encode() + b"/start.sh", once)
+            self.assertNotIn(b"/var/bbattery", once)
+
     def test_deploy_profile_fallback_and_manager_precedence(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

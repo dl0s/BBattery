@@ -9,12 +9,12 @@ class PackageTest(unittest.TestCase):
         root=ET.parse(ROOT/'bar-descriptor.xml').getroot()
         ns={'q':'http://www.qnx.com/schemas/application/1.0'}
         self.assertEqual(root.find('q:id',ns).text,'top.blaccat.BBattery')
-        self.assertEqual(root.find('q:buildId',ns).text,'7')
+        self.assertEqual(root.find('q:buildId',ns).text,'8')
         self.assertNotIn('run_when_backgrounded',[p.text for p in root.findall('q:permission',ns)])
     def test_bar_matches_current_sources(self):
         with zipfile.ZipFile(ROOT/'build/BBattery.bar') as bar:
             self.assertIn('Package-Name: top.blaccat.BBattery',bar.read('META-INF/MANIFEST.MF').decode())
-            for name,path in [('native/bbattery','build/bbattery'),('native/assets/main.qml','assets/main.qml'),('native/assets/Metric.qml','assets/Metric.qml')]:
+            for name,path in [('native/bbattery','build/bbattery'),('native/batteryd','build/batteryd'),('native/assets/main.qml','assets/main.qml'),('native/assets/Metric.qml','assets/Metric.qml')]:
                 self.assertEqual(bar.read(name),(ROOT/path).read_bytes())
             self.assertNotIn('native/assets/Chart.qml',bar.namelist())
             for name in bar.namelist():

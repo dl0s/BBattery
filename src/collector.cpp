@@ -63,7 +63,7 @@ Battery::Sample capture(const QString &run,int interval){
     s.mode=Battery::modeFor(s);battery_free_info(&info);return s;
 }
 bool storageTests(QString *report){
-    QString path=QString("/tmp/bbattery-test-%1.sqlite").arg(getpid());
+    QString path=QDir::tempPath()+QString("/bbattery-test-%1.sqlite").arg(getpid());
     bool ok=true;
     {
         Battery::Store db;ok=db.open(path,true);
@@ -119,7 +119,7 @@ bool storageTests(QString *report){
         "FAIL: SQLite storage tests\n";return ok;
 }
 bool batteryTests(QString *report){
-    const QString path=QString("/tmp/bbattery-profile-test-%1.sqlite").arg(getpid());bool ok=true;
+    const QString path=QDir::tempPath()+QString("/bbattery-profile-test-%1.sqlite").arg(getpid());bool ok=true;
     QVariantList preserved;
     {
         Battery::Store db;ok=db.open(path,true);
@@ -176,7 +176,7 @@ bool testCheck(bool condition,const char *label,QString *report){
     *report+=QString(condition?"PASS: ":"FAIL: ")+label+"\n";return condition;
 }
 bool intervalTests(QString *report){
-    const QString path=QString("/tmp/bbattery-interval-test-%1.sqlite").arg(getpid());bool ok=true;
+    const QString path=QDir::tempPath()+QString("/bbattery-interval-test-%1.sqlite").arg(getpid());bool ok=true;
     {
         Battery::Store db;ok=db.open(path,true);
         Battery::Sample s;s.utc=100000;s.mono=100000;s.run="interval-test";s.ready=true;s.batteryId=244;s.interval=30;
@@ -279,7 +279,7 @@ int main(int argc,char **argv){
     if(bps_initialize()!=BPS_SUCCESS){std::fputs("BPS initialization failed\n",stderr);return 6;}
     const QString run=QUuid::createUuid().toString();qint64 next=0,lastHeartbeat=0,deadline=0;
     QString failure,activeKey;QMap<QString,QString> labels;
-    std::fprintf(stderr,"BBattery collector 0.1.0.7 interval tests; pid=%d euid=%d\n",int(getpid()),int(geteuid()));
+    std::fprintf(stderr,"BBattery collector 0.1.0.8 interval tests; pid=%d euid=%d\n",int(getpid()),int(geteuid()));
     while(!stopping){
         QSettings settings(dir+"/settings.ini",QSettings::IniFormat);
         settings.beginGroup("batteries");QStringList keys=settings.childKeys();settings.endGroup();

@@ -29,13 +29,19 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/test-capacity.ps1
 python -B tests/package_test.py
 python -B tests/device_tools_test.py
 python -B tools/device.py install
-python -B tools/device.py launch
-python -B tools/device.py provision
-python -B tests/interval_device_test.py
+python -B tests/collector_recovery_device_test.py
 python -B tests/startup_test.py
 ```
 
-使用 INTROOP_SDK_ROOT（当前 C:\bbdevtools）与 BB10 的 gcc_ntoarmv7le_cpp / libcpp.so.4。部署沿用本机已固定 SSH 主机密钥的 Q10 连接配置。GUI 保持应用沙箱身份；独立采集器使用非 root 身份。provision 在切换服务前对隔离 /tmp 数据库执行原生测量、存储、电池身份及定时测试边界检查。无须重启设备或重新修改已有启动钩子。
+使用 INTROOP_SDK_ROOT（当前 C:\bbdevtools）与 BB10 的 gcc_ntoarmv7le_cpp / libcpp.so.4。部署沿用本机已固定 SSH 主机密钥的 Q10 连接配置。
+
+0.1.0.8 的 BAR 同时包含界面和采集器。`tools/device.py install` 会安装并核对两者、通过系统启动器打开界面、配置独立采集服务、添加或更新 BBattery 启动项，并确认界面已连接数据库和采集器。服务配置保存于持久目录 `/accounts/1000/bbattery-service`，使用应用的 UID/GID 和账户访问组 1000 执行，不依赖以 root 身份执行新建的程序文件。GUI 保持应用沙箱身份。
+
+切换服务前使用同一采集身份，在应用诊断目录的隔离数据库中执行原生测量、存储、电池身份及定时测试边界检查。`tools/device.py provision` 可单独修复已安装的采集服务；`tools/device.py boot-hook` 可单独补齐启动项。采集服务和界面可分别重启，不需要重启设备。恢复测试只执行 BBattery 的启动段，不执行其他系统启动服务。
+
+## Q10 修复验证（2026-10-03）
+
+0.1.0.8 已在当前 Q10 恢复采集连接。原生隔离自检、20 项本地部署/安装包检查及 19 项真机恢复检查通过。真机一分钟放电测试在界面关闭时采集 7 个真实样本，按截止时间保存 60 秒结果，积分覆盖率 100%；电池标记 B1 保留。通过实际安装的 BBattery 启动段恢复停止的服务并验证重复启动不增加实例；没有重启整台设备。
 
 ## Q10 验证（2026-10-02）
 
