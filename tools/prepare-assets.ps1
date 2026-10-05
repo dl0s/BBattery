@@ -1,12 +1,12 @@
-param([string]$ReferenceRoot = '')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-if (-not $ReferenceRoot) { $ReferenceRoot = Join-Path (Split-Path -Parent $root) 'BBFile' }
 $icons = Join-Path $root 'assets/icons'
 New-Item -ItemType Directory -Force -Path $icons | Out-Null
 $mapping = @{ 'refresh'='refresh'; 'settings'='settings'; 'save'='save'; 'close'='close'; 'history'='history'; 'info'='info'; 'charge'='next'; 'discharge'='previous'; 'previous'='previous'; 'next'='next' }
 foreach ($name in $mapping.Keys) {
-    Copy-Item -LiteralPath (Join-Path $ReferenceRoot ('assets/icons/' + $mapping[$name] + '.png')) -Destination (Join-Path $icons ($name + '.png'))
+    $source = Join-Path $root ('assets/source-icons/' + $name + '.png')
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Missing project icon source: $source" }
+    Copy-Item -LiteralPath $source -Destination (Join-Path $icons ($name + '.png'))
 }
 Add-Type -AssemblyName System.Drawing
 function Draw-Battery([int]$size, [bool]$background) {

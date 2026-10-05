@@ -1,6 +1,9 @@
 #include "store.h"
 #include "collector_state.h"
 #include <QCoreApplication>
+#include <QThread>
+#include <bb/Application>
+#include <bb/system/InvokeManager>
 #include <QFile>
 #include <QDir>
 #include <QUuid>
@@ -312,15 +315,15 @@ bool readinessTests(QString *report){
     QFile::remove(dir+"/collector.instance");QFile::remove(dir+"/collector.lock");QDir().rmdir(dir);return ok;
 }
 }
-int main(int argc,char **argv){
-    QCoreApplication app(argc,argv);QStringList args=app.arguments();
+static int runCollector(QStringList args){
     if(args.contains("--self-test")){
         QString report;bool ok=Battery::selfTest(&report);ok=storageTests(&report)&&ok;ok=batteryTests(&report)&&ok;ok=intervalTests(&report)&&ok;
         ok=durabilityTests(&report)&&ok;ok=readinessTests(&report)&&ok;
         std::fputs(report.toUtf8().constData(),stdout);return ok?0:1;
     }
-    int index=args.indexOf("--data");if(index<0 || index+1>=args.size()){std::fputs("--data is required\n",stderr);return 2;}
-    QString dir=args[index+1];
+    int index=args.indexOf("--data");
+    if(index>=0&&index+1>=args.size()){std::fputs("--data requires a directory\n",stderr);return 2;}
+    QString dir=index>=0?args[index+1]:QDir::currentPath()+"/data/battery";
     if(!dir.startsWith("/accounts/1000/appdata/top.blaccat.BBattery.") || !dir.endsWith("/data/battery")){
         std::fputs("Unexpected application data directory\n",stderr);return 2;
     }
@@ -358,7 +361,7 @@ int main(int argc,char **argv){
     const QString run=QUuid::createUuid().toString();qint64 next=0,lastHeartbeat=0,deadline=0;
     if(!Battery::writeCollectorInstance(dir,run)){std::fputs("Collector instance persistence failed\n",stderr);return 7;}
     QString failure,activeKey;QMap<QString,QString> labels;
-    std::fprintf(stderr,"BBattery collector 0.1.0.9 interval tests; pid=%d euid=%d\n",int(getpid()),int(geteuid()));
+    std::fprintf(stderr,"BBattery collector 0.1.0.12 interval tests; pid=%d euid=%d\n",int(getpid()),int(geteuid()));
     while(!stopping){
         QSettings settings(dir+"/settings.ini",QSettings::IniFormat);
         settings.beginGroup("batteries");QStringList keys=settings.childKeys();settings.endGroup();
@@ -449,4 +452,21 @@ int main(int argc,char **argv){
     db.finishTest("collector-stopped",false);
     db.closeSession("collector-stopped");db.heartbeat(run,10,true,"Collector stopped");
     bps_shutdown();::close(lock);return 0;
+}
+class CollectorWorker:public QThread {
+public:
+    explicit CollectorWorker(const QStringList &arguments):args(arguments),result(1){}
+    QStringList args;int result;
+protected:
+    void run(){result=runCollector(args);}
+};
+int main(int argc,char **argv){
+    QStringList args;for(int i=0;i<argc;++i)args<<QString::fromLocal8Bit(argv[i]);
+    if(args.contains("--self-test")||args.contains("--status")){
+        QCoreApplication app(argc,argv);return runCollector(args);
+    }
+    // Registered OS service receives its own lifecycle, independent of the GUI card.
+    bb::Application app(argc,argv);bb::system::InvokeManager invocations;
+    CollectorWorker worker(args);QObject::connect(&worker,SIGNAL(finished()),&app,SLOT(quit()));
+    worker.start();app.exec();stopping=1;worker.wait();return worker.result;
 }

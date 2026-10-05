@@ -18,6 +18,7 @@ public:
     QVariantList history(qint64 begin,qint64 end,QVariantMap *summary,qint64 sessionId=0,const QString &batteryKey=QString());
     QVariantList query(const QString &sql,const QVariantList &bindings=QVariantList());
     QVariantMap capacitySession(const QString &mode,int batteryId,qint64 sessionId=0,const QString &batteryKey=QString());
+    QVariantMap capacitySummary(const QString &key,const QString &activeKey,const QVariantMap &systemSample=QVariantMap());
     bool setBattery(const QString &key,const QString &label);
     bool registerBattery(const QString &key,const QString &label);
     bool startTest(const QString &id,const QString &key,const QString &label,int seconds,const Sample &first);

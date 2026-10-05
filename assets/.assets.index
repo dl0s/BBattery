@@ -1,7 +1,12 @@
 1
-14
+19
 main.qml
 Metric.qml
+CapacityDisplay.qml
+BatteryDetail.qml
+TestPage.qml
+TestRecords.qml
+TestResult.qml
 icons/battery.png
 icons/charge.png
 icons/close.png

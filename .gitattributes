@@ -1,0 +1,8 @@
+*.cpp text eol=lf
+*.h text eol=lf
+*.qml text eol=lf
+*.py text eol=lf
+*.ps1 text eol=lf
+*.xml text eol=lf
+docs/history/** -text whitespace=cr-at-eol
+*.png binary

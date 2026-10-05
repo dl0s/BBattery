@@ -1,53 +1,56 @@
 # BBattery
 
-BlackBerry Q10 上的定时电池容量测试工具。界面只有“测试”和“结果”两个页面。
+BlackBerry Q10 的电池档案与整电池预估容量工具。默认首页是“电池 · 容量总览”，每项直接显示容量、来源和估计时间；充放电数据、定时测试及记录位于二级页面。应用 **0.1.0.12**、固件 **1.1.6-M**、本轮发布管理器/Core/CLI **1.1.6.5** 分别管理版本号。
 
 ## 使用
 
-1. 在“电池标记”中为每块实体电池建立名称，装入后“设为当前电池”。重新装回时选择已有标记，重命名不改变身份或记录。
-2. 输入测试时长（1–1440 分钟）和采样间隔。默认每 30 秒采样，可选择 10 或 60 秒。
-3. 点击“开始测试”，自动识别充电或放电方向。到时自动结束，也可提前“结束并保存”。关闭界面仍按原截止时间执行。
-4. 在“结果”中按电池查看记录，打开详情或导出本次 CSV 和 JSON 至 Documents/BBattery。每次读取 50 条，可加载更早结果。
+1. 为每块实体电池新增档案。装入电池后打开详情，选择“设为当前”；重新装回时使用原档案。查看其他电池只改变浏览对象，重命名保留 battery_key 和历史。
+2. 首页比较整电池容量；“当前使用”和“未装入”用文字标明。无合格来源显示“暂无可靠估计”，不会填入标称容量或示例值。
+3. “开始测试”进入二级页面，输入 1–1440 分钟，选择 10/30/60 秒采样。开始时识别充放电方向，正常到时结束；也可“结束并保存”。测试中或操作待确认时禁止切换采集归属。
+4. 打开电池详情先看容量依据，展开充放电读数；测试记录每次读取 50 条，可加载更早记录。旧历史读数与当前测试实时读数明确区分，0% 是合法读数，缺失显示 `--`。
+5. 测试详情显示 SOC、区间 mAh/mWh、时长、覆盖率、缺口和中断原因，可导出本次 CSV/JSON 到 Documents/BBattery。顶部菜单保留全部原始数据导出和当前页面截图。
 
-待机不采样。界面不扫描完整历史，不绘制实时曲线，不统计生命周期指标，不运行电量/温度提醒。GUI 在后台可由系统挂起；独立采集器继续执行已开始的测试。历史原始数据、电池标记及旧设置保留，可从菜单“导出全部原始数据”。旧监控片段不会伪装成新定时测试。
+整电池预估容量优先使用该 battery_key 的最近合格放电测试，没有时使用合格充电测试并标“充电估计”。测试必须完成、SOC 稳定且变化至少 30 个百分点、有效电流积分覆盖至少 95%，并通过数值检查。区间电量和当前剩余百分比不能直接作为整电池容量。新短测试或中断不会抹掉旧合格值，显示的是估计本身的结束时间。
 
-## 结果含义
+系统满充参考必须有明确来源与实体归属；当前没有足够归属证据，故不启用系统参考。充电和放电估计独立保留，不混合平均。历史监测 sessions 保留，不能作为新定时测试结果。
 
-区间电量（mAh）与电能（mWh）对相邻有效的电池平均电流/电压做梯形积分。测试首次采样为起点，截止采样可能略晚于设定时刻，积分与 SOC 插值截断至单调时钟截止时间。CSV 保留实际原始采样时间。
+待机不采样，首页只做后台有限索引查询。0.1.0.12 通过 BB10 的独立 headless 入口启动原有 batteryd，保留单实例和真实心跳就绪判断。0.1.0.11 的 GUI 子进程方式在关闭卡片实测中失败，已保留失败记录。当前实机验证状态和边界以 [本轮验证记录](docs/verification-0.1.0.12.md) 为准，不继承旧版验收。
 
-缺失读数为 NULL，不是零。大采样缺口排除积分，并降低电流积分覆盖率。重启、停止采集器、更换电池、系统时间变化或充放电方向变化会结束测试并标记中断；不会自动恢复，也不会跨电池拼接。
+## 构建与设备操作
 
-“整电池容量估计”仅在测试已完成、SOC 变化至少 30 个百分点、方向稳定、有效电流积分覆盖至少 95% 时显示。它是按本次 SOC 变化外推的参考值，不能把短时间区间电量当作已校准的整电池容量。
-
-测试记录、逐样本归属与增量结果存储于 SQLite。旧样本与电池会话字段保留。每次采样和测试结果更新属于同一事务。测试命令保存操作编号与参数摘要，受理前有效期为 20 秒；界面重启继续核对原编号。未确认的操作不会因超时被直接清除。开始、结束测试与成功确认在同一数据库事务中提交。
-
-## 构建与部署
+先运行发布的 BBmanager 桌面程序作为共享执行者，并在其设备登记中选定目标。所有主机设备业务只提交到共享 v1 队列，按原 ID 查询。
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Package
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/test-capacity.ps1
-python -B tests/package_test.py
-python -B tests/device_tools_test.py
-python -B tests/collector_release_test.py
-python -B tools/device.py install
-python -B tests/collector_recovery_device_test.py
-python -B tests/startup_test.py
+$env:INTROOP_SDK_ROOT = 'C:/bbdevtools'
+# intent 必须是本次新构建的文件；重用同一文件只查原任务。
+python -B tools/device.py build --intent build/protocol/build-my-revision.json
+python -B tools/device.py status <构建ID>
+python -B tools/record_operation.py <构建ID>
+
+# --host 从已验证的登记中解析 PIN 与独立连接，不使用旧配置回退。
+python -B tools/device.py install --host 192.168.1.61
+python -B tools/device.py status <部署ID>
+python -B tools/device.py continue-deployment <原部署ID> --intent build/protocol/my-observation.json
+python -B tools/device.py status <观察ID>
 ```
 
-使用 INTROOP_SDK_ROOT（当前 C:\bbdevtools）与 BB10 的 gcc_ntoarmv7le_cpp / libcpp.so.4。部署沿用本机已固定 SSH 主机密钥的 Q10 连接配置。
+当前流程依据 `C:/Users/dove/Documents/BBmanager/Documentation/标准操作文档.md`，CLI 为 `C:/Users/dove/Documents/BBmanager/dist/Q10Manager/cli/Q10Manager.Cli.exe`。提交返回 ID 只表示入队；部署成功还需原 PPS success/100、实际版本/身份/目录共同确认。原事务观察不能改成重新安装，也不自动清理未知任务。
 
-0.1.0.9 的 BAR 同时包含界面和采集器。`tools/device.py install` 通过 Autoloader 冻结的设备协调入口和原生 PPS 安装协议部署；已安装且所有资源摘要一致时，核对后完成采集服务激活。持久操作编号在提交前保存，断开后重跑同一命令续查原事务。旧包、启动来源、数据库与设置先备份并核验，再停止服务。新验收使用独立文件，保留失败和超时记录。
+当前协议没有通用 BBattery 前台启动、私有 GUI 操作或固件采集器维护 API。手动打开应用进行界面与测试操作；主机使用固定 applicationLog、processes、deviceFiles 读取证据。旧 SSH/SCP、with_device_lock、Q10Deploy、boot-hook、btool 修改和维护流程均不作为回退。
 
-服务配置保存于持久目录 `/accounts/1000/bbattery-service`。启动脚本最多尝试 3 次，随后退出；采集器使用应用 UID/GID 和账户组 1000，保留进程锁，不运行常驻 shell 监护器。界面按真实锁、实例身份和业务心跳判断就绪。`provision` 与 `boot-hook` 使用同一发布意图和保护流程。采集服务和界面可分别恢复，无需重启整台设备。
+保留 C++98、Qt4/Cascades/QML、SQLite 与 BB10 ARM 工具链。SDK、Java、运行库 ABI、打包与迁移恢复说明见 [环境与容量说明](docs/environment-and-capacity.md)。每次构建记录实际环境、检查所有退出码、加载五个 QML 页面并审计 BAR。
 
-设备维护遵循本机 `C:/Users/dove/Documents/Autoloader/开发规范与稳定基线保护.md`，保护 unsigned 安装服务 1.0.9。升级、资源上限、恢复命令及实测边界见 [采集器 0.1.0.9 修复记录](docs/collector-0.1.0.9.md)。
+## 主机验证
 
-## Q10 修复验证（2026-10-03）
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/test-capacity.ps1
+python -B tests/device_tools_test.py
+python -B tests/collector_release_test.py
+python -B tests/package_test.py
+python -B tests/qml_load_test.py
+python -B tools/audit_bar.py build/BBattery.bar
+```
 
-0.1.0.8 已在当前 Q10 恢复采集连接。原生隔离自检、20 项本地部署/安装包检查及 19 项真机恢复检查通过。真机一分钟放电测试在界面关闭时采集 7 个真实样本，按截止时间保存 60 秒结果，积分覆盖率 100%；电池标记 B1 保留。通过实际安装的 BBattery 启动段恢复停止的服务并验证重复启动不增加实例；没有重启整台设备。
+QML 回归会重现并拒绝 0.1.0.10 真机遇到的两个语法错误。SDK 页面预览用 `python -B tools/qml_preview.py --all`；`--scenario long-name/empty/running/pending` 检查隔离界面。bb.system 的 Windows 桩不证明真机提示框正确。
 
-## Q10 验证（2026-10-02）
-
-0.1.0.7 已在真机完成定时测试、界面关闭后自动结束、逐样本归属、CSV/JSON 导出和待机不新增采样检查。原有 6000 条样本、23 个会话、876 个原始快照与两块电池标记全部保持原值。三次启动的场景准备时间为 684–769 毫秒，首次索引读取为 55–72 毫秒；通过 SSH 请求观察就绪的时间另含通信开销，不作为界面加载时间。
-
-原生隔离数据库检查覆盖截止时间的 mAh/mWh/SOC 截断、提前结束、缺失值、采样缺口、SOC 逆向跳变、电池身份、事务回滚与重启中断。整电池实际容量仍需用户执行足够 SOC 跨度的实测。
+旧六个设备测试入口显示 RETIRED，原字节位于 `docs/history/0.1.0.9/`。它们依赖的直接传输和私有维护已关闭，不能把历史通过数算入本轮。主机、SDK 预览、共享队列实测、用户确认和未验证项目分别记录于验证文档。

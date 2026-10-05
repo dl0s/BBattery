@@ -1,5 +1,6 @@
 #include "store.h"
 #include "capacity.h"
+#include "capacity_summary.h"
 #include <QFile>
 #include <QFileInfo>
 #include <QDir>
@@ -131,6 +132,7 @@ bool Store::open(const QString &path,bool writer){
         "gaps INTEGER DEFAULT 0,capacity REAL);"
         "CREATE INDEX IF NOT EXISTS capacity_tests_battery ON capacity_tests(battery_key,start_ms);"
         "CREATE INDEX IF NOT EXISTS capacity_tests_status ON capacity_tests(status);"
+        "CREATE INDEX IF NOT EXISTS capacity_tests_summary_fallback ON capacity_tests(battery_key,mode,status,end_ms DESC,id DESC);"
         "CREATE TABLE IF NOT EXISTS test_samples(test_id TEXT NOT NULL REFERENCES capacity_tests(id),"
         "sample_id INTEGER NOT NULL UNIQUE REFERENCES samples(id),PRIMARY KEY(test_id,sample_id));"
         "CREATE TABLE IF NOT EXISTS test_control(id INTEGER PRIMARY KEY CHECK(id=1),request_id TEXT,ok INTEGER,message TEXT);"
@@ -138,11 +140,42 @@ bool Store::open(const QString &path,bool writer){
         "mono_ms INTEGER,interval_s INTEGER,paused INTEGER,error TEXT,pid INTEGER,euid INTEGER); COMMIT;";
     char *err=0;
     if(sqlite3_exec(db,schema,0,0,&err)!=SQLITE_OK){failure=QString::fromUtf8(err?err:"Schema failed");sqlite3_free(err);return false;}
+    // Optional acceleration on older installed SQLite; the ordinary index remains valid.
+    if(sqlite3_libversion_number()>=3008000&&!execute(QString::fromUtf8(Capacity::summaryIndex().c_str())))return false;
     QVariantList version=query("SELECT value FROM metadata WHERE key='schema'");
     if(version.isEmpty() || version.first().toMap()["value"]!="1"){failure="Unsupported database schema";return false;}
     if(!query("SELECT id FROM samples LIMIT 1").isEmpty())pendingBreak="collector-restart";
     if(!execute("UPDATE capacity_tests SET status='interrupted',reason='collector-restart',end_ms=last_ms,capacity=NULL WHERE status='running'"))return false;
     return execute("UPDATE sessions SET end_ms=last_ms,reason='collector-restart' WHERE end_ms IS NULL");
+}
+QVariantMap Store::capacitySummary(const QString &key,const QString &activeKey,const QVariantMap &systemSample){
+    QVariantMap summary;summary["value"]=QVariant();summary["unit"]="mAh";
+    summary["sourceType"]="none";summary["sourceId"]=QVariant();summary["estimatedAt"]=QVariant();
+    summary["available"]=false;summary["unavailableReason"]="no-qualified-test";
+    summary["discharge"]=QVariantMap();summary["charge"]=QVariantMap();
+    const char *modes[]={"discharge","charge"};
+    for(int i=0;i<2;++i){
+        QVariantList rows=query(QString::fromUtf8(Capacity::summarySql().c_str()),QVariantList()<<key<<modes[i]);
+        if(!failure.isEmpty()){summary["unavailableReason"]="database-read-failed";return summary;}
+        if(rows.isEmpty())continue;
+        const QVariantMap row=rows.first().toMap();QVariantMap estimate;
+        estimate["value"]=row["capacity"];estimate["sourceId"]=row["id"];estimate["estimatedAt"]=row["end_ms"];
+        summary[modes[i]]=estimate;
+        if(!summary["available"].toBool()){
+            summary["value"]=estimate["value"];summary["sourceId"]=estimate["sourceId"];summary["estimatedAt"]=estimate["estimatedAt"];
+            summary["sourceType"]=QString(modes[i])+"-test";summary["available"]=true;summary["unavailableReason"]=QVariant();
+        }
+    }
+    // Historical samples have a software marker, not proof of the installed cell.
+    // Accept BPS full-charge capacity only with an explicit confirmed attribution token.
+    if(!summary["available"].toBool()&&Capacity::systemReference(key==activeKey&&systemSample["battery_key"]==key,
+       systemSample["attributionConfirmed"].toBool(),systemSample["ready"].toBool(),systemSample["source"]=="bps-full-charge-capacity",
+       systemSample["id"].toLongLong()>0,systemSample["utc_ms"].toLongLong()>0,systemSample["full_capacity"].toDouble())){
+        summary["value"]=systemSample["full_capacity"];summary["sourceType"]="system-reference";
+        summary["sourceId"]=systemSample["id"];summary["estimatedAt"]=systemSample["utc_ms"];
+        summary["available"]=true;summary["unavailableReason"]=QVariant();
+    }
+    return summary;
 }
 QVariantMap Store::capacitySession(const QString &mode,int batteryId,qint64 sessionId,const QString &key){
     if((batteryId<0&&key.isEmpty())||(mode!="charge"&&mode!="discharge"))return QVariantMap();

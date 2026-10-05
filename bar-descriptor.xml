@@ -3,17 +3,34 @@
     <id>top.blaccat.BBattery</id>
     <name>BBattery</name>
     <versionNumber>0.1.0</versionNumber>
-    <buildId>9</buildId>
-    <description>Timed battery capacity tests with persistent battery markers</description>
+    <buildId>12</buildId>
+    <description>Battery profiles and traceable full capacity estimates</description>
     <author>Local Developer</author>
     <icon><image>icon.png</image></icon>
     <env var="CASCADES_THEME" value="dark"/>
     <asset path="assets/icon.png">icon.png</asset>
-    <asset path="build/bbattery" entry="true" type="Qnx/Elf">bbattery</asset>
-    <asset path="build/batteryd" type="Qnx/Elf">batteryd</asset>
+    <asset path="build/bbattery" entryPointId="BBatteryGui" entry="true" type="Qnx/Elf">bbattery</asset>
+    <asset path="build/batteryd" entryPointId="BBatteryCollector" type="Qnx/Elf">batteryd</asset>
     <asset path="assets/main.qml">assets/main.qml</asset>
     <asset path="assets/Metric.qml">assets/Metric.qml</asset>
+    <asset path="assets/CapacityDisplay.qml">assets/CapacityDisplay.qml</asset>
+    <asset path="assets/BatteryDetail.qml">assets/BatteryDetail.qml</asset>
+    <asset path="assets/TestPage.qml">assets/TestPage.qml</asset>
+    <asset path="assets/TestRecords.qml">assets/TestRecords.qml</asset>
+    <asset path="assets/TestResult.qml">assets/TestResult.qml</asset>
     <asset path="assets/icons">assets/icons</asset>
     <permission>access_shared</permission>
+    <permission system="true">_sys_run_headless</permission>
+    <permission system="true">_sys_headless_nostop</permission>
+    <entryPoint id="BBatteryGui"><name>BBattery</name></entryPoint>
+    <entryPoint id="BBatteryCollector"><name>BBattery Collector</name><entryPointType>Qnx/Elf</entryPointType></entryPoint>
+    <invoke-target id="top.blaccat.BBattery.collector">
+        <invoke-target-type>application.headless</invoke-target-type>
+        <entry-point-id>BBatteryCollector</entry-point-id>
+        <filter>
+            <action>top.blaccat.BBattery.START_COLLECTOR</action>
+            <mime-type>application/vnd.blaccat.bbattery.collector</mime-type>
+        </filter>
+    </invoke-target>
     <initialWindow><systemChrome>none</systemChrome></initialWindow>
 </qnx>

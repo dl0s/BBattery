@@ -1,62 +1,95 @@
-"""Host checks for the coordinated BBattery observers and release entry."""
+"""Host protocol-client checks; no device commands or real queue mutations."""
+import json
 import pathlib
+import subprocess
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tools"))
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'tools'))
 import device
-import collector_release
-import device_lease
-
-DNAME="top.blaccat.BBattery.testDev_at_BBattery8620bde8"
 
 class DeviceToolsTest(unittest.TestCase):
-    def test_install_provision_and_boot_use_the_same_release_entry(self):
-        with patch.object(collector_release,"install",return_value="verified") as deploy:
-            self.assertEqual(device.install(),"verified")
-            self.assertEqual(device.provision(),"verified")
-            self.assertEqual(device.install_boot_hook(),"verified")
-            self.assertEqual(deploy.call_count,3)
-
-    def test_profile_prefers_manager_and_preserves_deploy_fallback(self):
+    def test_no_legacy_profile_fallback(self):
         with tempfile.TemporaryDirectory() as directory:
-            root=pathlib.Path(directory)
-            with self.assertRaises(FileNotFoundError):device.connection_profile(root)
-            deploy=root/"Q10Deploy/config.json";deploy.parent.mkdir();deploy.write_text("{}")
-            self.assertEqual(device.connection_profile(root),deploy)
-            manager=root/"Q10Manager/connection.json";manager.parent.mkdir();manager.write_text("{}")
-            self.assertEqual(device.connection_profile(root),manager)
+            root = pathlib.Path(directory)
+            old = root/'Q10Deploy/config.json'; old.parent.mkdir(); old.write_text('{}')
+            with self.assertRaises(FileNotFoundError): device.connection_profile(root)
+            current = root/'Q10Manager/connection.json'; current.parent.mkdir(); current.write_text('{}')
+            self.assertEqual(device.connection_profile(root),current)
 
-    @patch.object(device,"receipt",return_value=({"dname":DNAME},"", ""))
-    @patch.object(device,"ssh")
-    def test_gui_pid_requires_exact_current_arguments(self,ssh,receipt):
-        ssh.side_effect=[" 303 "+DNAME+"\n 304 /apps/"+DNAME+"/native/batteryd --data /private\n"," 303 "+DNAME+"\n"]
-        self.assertEqual(device.gui_pids(),["303"])
-        ssh.side_effect=[" 303 "+DNAME+"\n"," 303 unrelated\n"]
-        self.assertEqual(device.gui_pids(),[])
+    def test_host_resolves_its_own_verified_pin_even_with_same_host_key(self):
+        devices = [{'pin':'AAAAAAAA','endpoints':[{'deviceHost':'192.168.1.61','expectedPin':'AAAAAAAA','sshKeyPath':'one','hostPublicKey':'same'}]},
+                   {'pin':'BBBBBBBB','endpoints':[{'deviceHost':'192.168.1.64','expectedPin':'BBBBBBBB','sshKeyPath':'two','hostPublicKey':'same'}]}]
+        with patch.object(device,'cli',return_value=json.dumps(devices)):
+            self.assertEqual(device.connection('192.168.1.61')['sshKeyPath'],'one')
+            self.assertEqual(device.connection('192.168.1.64')['sshKeyPath'],'two')
+            with self.assertRaises(ValueError): device.connection('unknown')
 
-    @patch.object(device,"receipt",return_value=({"dname":DNAME},"", ""))
-    @patch.object(device,"gui_pids",return_value=["303"])
-    @patch.object(device,"ssh")
-    def test_launch_skips_live_gui(self,ssh,pids,receipt):
-        with tempfile.TemporaryDirectory() as directory,patch.dict('os.environ',LOCALAPPDATA=directory):
-            device.launch();ssh.assert_not_called()
+    def test_stable_intent_precedes_submit_and_restart_only_queries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            intent = pathlib.Path(directory)/'intent.json'
+            request = {'kind':'build','projectDirectory':'fixture'}
+            def call(command,*arguments,**kwargs):
+                saved = json.loads(intent.read_text())
+                if command == 'submit':
+                    self.assertEqual(saved['phase'],'submission-may-have-started')
+                    self.assertEqual(json.loads(pathlib.Path(arguments[0]).read_text())['id'],saved['id'])
+                    return saved['id']
+                self.assertEqual(command,'status');return '{}'
+            with patch.object(device,'cli',side_effect=call) as cli:
+                first = device.submit(request,intent)
+                self.assertEqual(device.submit(request,intent),first)
+                self.assertEqual([args.args[0] for args in cli.call_args_list],['submit','status'])
+                with self.assertRaises(ValueError): device.submit(dict(request,projectDirectory='changed'),intent)
 
-    def test_lease_is_reentrant_and_keeps_lock_file(self):
-        with tempfile.TemporaryDirectory() as directory,patch.dict("os.environ",LOCALAPPDATA=directory):
-            with device_lease.lease():
-                with device_lease.lease():pass
-                self.assertTrue(device_lease._local.held)
-            self.assertFalse(device_lease._local.held)
-            self.assertEqual(len(list(pathlib.Path(directory).rglob("*.lock"))),1)
+    def test_lost_submission_response_never_replays(self):
+        with tempfile.TemporaryDirectory() as directory:
+            intent = pathlib.Path(directory)/'intent.json'
+            request = {'kind':'build'}
+            with patch.object(device,'cli',side_effect=subprocess.TimeoutExpired('submit',45)):
+                with self.assertRaisesRegex(RuntimeError,'original ID'): device.submit(request,intent)
+            original = json.loads(intent.read_text())['id']
+            with patch.object(device,'cli',return_value='{}') as cli:
+                self.assertEqual(device.submit(request,intent),original)
+                cli.assert_called_once_with('status',original,store=None)
 
-    def test_lease_refuses_unconfirmed_manager_job(self):
-        with tempfile.TemporaryDirectory() as directory,patch.dict("os.environ",LOCALAPPDATA=directory):
-            job=pathlib.Path(directory)/"Q10Manager/Operations/v1/jobs/pending";job.mkdir(parents=True)
-            (job/"state.json").write_text('{"status":"unconfirmed","id":"original"}')
-            (job/"request.json").write_text('{"connection":{"deviceHost":"192.168.1.61"}}')
-            with self.assertRaisesRegex(RuntimeError,"requires attention"):
-                with device_lease.lease():self.fail("Acquired unresolved queue")
+    def test_unconfirmed_result_is_not_success(self):
+        values = {'status':json.dumps({'state':{'status':'unconfirmed'}}),'events':'[]','failure':'{"code":"TERMINAL_MISSING"}'}
+        with patch.object(device,'cli',side_effect=lambda command,*args,**kwargs:values[command]) as cli:
+            result = device.observe('a'*32)
+            self.assertNotIn('result',result)
+            self.assertEqual(result['failure']['code'],'TERMINAL_MISSING')
 
-if __name__=="__main__":unittest.main(verbosity=2)
+    def test_original_transaction_observation_uses_original_snapshot_and_hash(self):
+        original = {'request':{'kind':'deploy','connection':{'expectedPin':'AAAAAAAA'},'packageSha256':'b'*64}}
+        with patch.object(device,'cli',return_value=json.dumps(original)),patch.object(device,'submit',return_value='c'*32) as submit:
+            self.assertEqual(device.continue_deployment('a'*32),'c'*32)
+            request = submit.call_args.args[0]
+            self.assertEqual(request['originalDeploymentId'],'a'*32)
+            self.assertEqual(request['packageSha256'],'b'*64)
+            self.assertNotIn('packagePath',request)
+
+    def test_legacy_device_operations_and_workers_fail_closed(self):
+        for method in (device.ssh,device.scp,device.launch,device.provision,device.install_boot_hook,device.app_call):
+            with self.assertRaisesRegex(RuntimeError,'no BBattery'): method('anything')
+        for command in ('worker','run-once','acknowledge','abandon','delete','cancel','ssh'):
+            with self.assertRaises(ValueError): device.cli(command)
+
+    def test_persistent_record_failure_prevents_submission(self):
+        with tempfile.TemporaryDirectory() as directory,patch.object(device,'save',side_effect=OSError('full')),patch.object(device,'cli') as cli:
+            with self.assertRaises(OSError): device.submit({'kind':'build'},pathlib.Path(directory)/'intent.json')
+            cli.assert_not_called()
+
+    def test_actual_cli_isolated_build_submission_and_original_read(self):
+        if not device.CLI.is_file(): self.skipTest('Published CLI unavailable')
+        with tempfile.TemporaryDirectory() as directory:
+            request = {'kind':'build','projectDirectory':str(ROOT),'sdkDirectory':'C:/bbdevtools','buildScriptPath':str(ROOT/'build.ps1'),'buildOutputPath':str(ROOT/'build/BBattery.bar'),'buildSwitches':['Package']}
+            intent = pathlib.Path(directory)/'client/intent.json'; store = pathlib.Path(directory)/'isolated-store'
+            first = device.submit(request,intent,store)
+            self.assertEqual(device.observe(first,store)['state']['status'],'queued')
+            self.assertEqual(device.submit(request,intent,store),first)
+            self.assertEqual(len(list((store/'jobs').iterdir())),1)
+
+if __name__ == '__main__': unittest.main(verbosity=2)

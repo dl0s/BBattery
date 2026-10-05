@@ -9,7 +9,7 @@ class PackageTest(unittest.TestCase):
         root=ET.parse(ROOT/'bar-descriptor.xml').getroot()
         ns={'q':'http://www.qnx.com/schemas/application/1.0'}
         self.assertEqual(root.find('q:id',ns).text,'top.blaccat.BBattery')
-        self.assertEqual(root.find('q:buildId',ns).text,'9')
+        self.assertEqual(root.find('q:buildId',ns).text,'12')
         self.assertNotIn('run_when_backgrounded',[p.text for p in root.findall('q:permission',ns)])
     def test_bar_matches_current_sources(self):
         with zipfile.ZipFile(ROOT/'build/BBattery.bar') as bar:
@@ -20,8 +20,9 @@ class PackageTest(unittest.TestCase):
             for name in bar.namelist():
                 self.assertFalse(name.endswith(('.pem','.key','.p12')))
     def test_focused_test_workflow(self):
-        qml=(ROOT/'assets/main.qml').read_text(encoding='utf-8-sig')
-        self.assertEqual(qml.count('    Tab {'),2)
+        qml='\n'.join(p.read_text(encoding='utf-8-sig') for p in (ROOT/'assets').glob('*.qml') if p.name not in ('Chart.qml','BatteryGauge.qml'))
+        self.assertIn('NavigationPane {',qml)
+        self.assertNotIn('TabbedPane {',qml)
         for name in ('backend.startTest','backend.stopTest','backend.selectTest','backend.useBattery','backend.renameBattery','backend.loadMore','backend.exportData'):
             self.assertIn(name,qml)
         for name in ('Chart {','DateTimePicker','BatteryGauge {','configureAlerts','History'):

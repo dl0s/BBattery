@@ -1,0 +1,26 @@
+[
+  {
+    "file": "docs\\history\\0.1.0.9\\tests-battery_device_test.py.txt",
+    "sha256": "4d393710995d336d55fa846d351258916617c1e781eb7d957b4b4354debf865a"
+  },
+  {
+    "file": "docs\\history\\0.1.0.9\\tests-collector_recovery_device_test.py.txt",
+    "sha256": "e4a98b87e44ae0733239103a2472b47c6b1cf1628dcb4502000be0e3b6400a77"
+  },
+  {
+    "file": "docs\\history\\0.1.0.9\\tests-device_test.py.txt",
+    "sha256": "db41752e3af85a2177a2fefa5cc58ed975e7307bcc63f4ad407b76be6e6a5b99"
+  },
+  {
+    "file": "docs\\history\\0.1.0.9\\tests-interval_device_test.py.txt",
+    "sha256": "2a78d38ec6dba4e1481b5b5508821e38599220e85aa5b0c1eac71a723ae97cad"
+  },
+  {
+    "file": "docs\\history\\0.1.0.9\\tests-migration_test.py.txt",
+    "sha256": "96154b11861e8f785a976f781567f0c0eff0a74170bc5b40797ba6640d746184"
+  },
+  {
+    "file": "docs\\history\\0.1.0.9\\tests-startup_test.py.txt",
+    "sha256": "4e20985ddadcf6621aeeb21b40091b58744d32aa9bc481803fd8c81ba001e5aa"
+  }
+]

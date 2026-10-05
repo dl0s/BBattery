@@ -21,6 +21,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Capacity history tests failed' }
     python -B tests/battery_profiles_test.py
     if ($LASTEXITCODE -ne 0) { throw 'Battery profile and interval-query tests failed' }
+    python -B tests/capacity_summary_test.py
+    if ($LASTEXITCODE -ne 0) { throw 'Battery capacity summary checks failed' }
 } finally {
     $env:PATH = $savedPath
     Pop-Location

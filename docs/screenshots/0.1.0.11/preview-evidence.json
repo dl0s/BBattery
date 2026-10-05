@@ -1,0 +1,108 @@
+[
+  {
+    "page": "main.qml",
+    "scenario": "normal",
+    "sourceSha256": "8e50e50f960bcbf27805a1e63ae2059b78dd97da9545e62da53c0841a33ecec6",
+    "previewExecutable": "C:\\bbdevtools\\target_10_3_1_995\\win32\\x86\\usr\\bin\\qmlpreview.exe",
+    "systemPlugin": "isolated stubs; device plugin not verified",
+    "errors": [],
+    "exitCode": 0,
+    "forcedStop": false,
+    "fixtureOverrides": false,
+    "evidenceDirectory": "C:\\Users\\dove\\Documents\\BBattery\\build\\qml-preview\\main.qml-normal\\e236663c5d54",
+    "files": [
+      "C:\\Users\\dove\\Documents\\BBattery\\build\\qml-preview\\main.qml-normal\\e236663c5d54\\frames\\frame_1_1.png",
+      "C:\\Users\\dove\\Documents\\BBattery\\build\\qml-preview\\main.qml-normal\\e236663c5d54\\frames\\frame_1_2.png",
+      "C:\\Users\\dove\\Documents\\BBattery\\build\\qml-preview\\main.qml-normal\\e236663c5d54\\frames\\frame_1_3.png"
+    ],
+    "deliveredScreenshot": "C:\\Users\\dove\\Documents\\BBattery\\docs\\screenshots\\0.1.0.11\\sdk-home.png"
+  },
+  {
+    "page": "BatteryDetail.qml",
+    "scenario": "normal",
+    "sourceSha256": "72e44ea8819003df1994dfc8aeb0702bb29a8e7f02ae8f2bf1362c13b46368f1",
+    "previewExecutable": "C:\\bbdevtools\\target_10_3_1_995\\win32\\x86\\usr\\bin\\qmlpreview.exe",
+    "systemPlugin": "isolated stubs; device plugin not verified",
+    "errors": [],
+    "exitCode": 0,
+    "forcedStop": false,
+    "fixtureOverrides": false,
+    "evidenceDirectory": "C:\\Users\\dove\\Documents\\BBattery\\build\\qml-preview\\BatteryDetail.qml-normal\\36f20be2d78d",
+    "files": [
+      "C:\\Users\\dove\\Documents\\BBattery\\build\\qml-preview\\BatteryDetail.qml-normal\\36f20be2d78d\\frames\\frame_1_1.png",
+      "C:\\Users\\dove\\Documents\\BBattery\\build\\qml-preview\\BatteryDetail.qml-normal\\36f20be2d78d\\frames\\frame_1_2.png"
+    ],
+    "deliveredScreenshot": "C:\\Users\\dove\\Documents\\BBattery\\docs\\screenshots\\0.1.0.11\\sdk-detail.png"
+  },
+  {
+    "page": "main.qml",
+    "scenario": "long-name",
+    "sourceSha256": "8e50e50f960bcbf27805a1e63ae2059b78dd97da9545e62da53c0841a33ecec6",
+    "previewExecutable": "C:\\bbdevtools\\target_10_3_1_995\\win32\\x86\\usr\\bin\\qmlpreview.exe",
+    "systemPlugin": "isolated stubs; device plugin not verified",
+    "errors": [],
+    "exitCode": 0,
+    "forcedStop": false,
+    "fixtureOverrides": false,
+    "evidenceDirectory": "C:\\Users\\dove\\Documents\\BBattery\\build\\qml-preview\\main.qml-long-name\\eb8234ff5ab6",
+    "files": [
+      "C:\\Users\\dove\\Documents\\BBattery\\build\\qml-preview\\main.qml-long-name\\eb8234ff5ab6\\frames\\frame_1_1.png",
+      "C:\\Users\\dove\\Documents\\BBattery\\build\\qml-preview\\main.qml-long-name\\eb8234ff5ab6\\frames\\frame_1_2.png",
+      "C:\\Users\\dove\\Documents\\BBattery\\build\\qml-preview\\main.qml-long-name\\eb8234ff5ab6\\frames\\frame_1_3.png"
+    ],
+    "deliveredScreenshot": "C:\\Users\\dove\\Documents\\BBattery\\docs\\screenshots\\0.1.0.11\\sdk-home-long-name.png"
+  },
+  {
+    "page": "main.qml",
+    "scenario": "empty",
+    "sourceSha256": "8e50e50f960bcbf27805a1e63ae2059b78dd97da9545e62da53c0841a33ecec6",
+    "previewExecutable": "C:\\bbdevtools\\target_10_3_1_995\\win32\\x86\\usr\\bin\\qmlpreview.exe",
+    "systemPlugin": "isolated stubs; device plugin not verified",
+    "errors": [],
+    "exitCode": 0,
+    "forcedStop": false,
+    "fixtureOverrides": false,
+    "evidenceDirectory": "C:\\Users\\dove\\Documents\\BBattery\\build\\qml-preview\\main.qml-empty\\4d9e8f16a19f",
+    "files": [
+      "C:\\Users\\dove\\Documents\\BBattery\\build\\qml-preview\\main.qml-empty\\4d9e8f16a19f\\frames\\frame_1_1.png",
+      "C:\\Users\\dove\\Documents\\BBattery\\build\\qml-preview\\main.qml-empty\\4d9e8f16a19f\\frames\\frame_1_2.png"
+    ],
+    "deliveredScreenshot": "C:\\Users\\dove\\Documents\\BBattery\\docs\\screenshots\\0.1.0.11\\sdk-home-empty.png"
+  },
+  {
+    "page": "main.qml",
+    "scenario": "running",
+    "sourceSha256": "8e50e50f960bcbf27805a1e63ae2059b78dd97da9545e62da53c0841a33ecec6",
+    "previewExecutable": "C:\\bbdevtools\\target_10_3_1_995\\win32\\x86\\usr\\bin\\qmlpreview.exe",
+    "systemPlugin": "isolated stubs; device plugin not verified",
+    "errors": [],
+    "exitCode": 0,
+    "forcedStop": false,
+    "fixtureOverrides": false,
+    "evidenceDirectory": "C:\\Users\\dove\\Documents\\BBattery\\build\\qml-preview\\main.qml-running\\eb4791f88c32",
+    "files": [
+      "C:\\Users\\dove\\Documents\\BBattery\\build\\qml-preview\\main.qml-running\\eb4791f88c32\\frames\\frame_1_1.png",
+      "C:\\Users\\dove\\Documents\\BBattery\\build\\qml-preview\\main.qml-running\\eb4791f88c32\\frames\\frame_1_2.png",
+      "C:\\Users\\dove\\Documents\\BBattery\\build\\qml-preview\\main.qml-running\\eb4791f88c32\\frames\\frame_1_3.png"
+    ],
+    "deliveredScreenshot": "C:\\Users\\dove\\Documents\\BBattery\\docs\\screenshots\\0.1.0.11\\sdk-home-running.png"
+  },
+  {
+    "page": "main.qml",
+    "scenario": "pending",
+    "sourceSha256": "8e50e50f960bcbf27805a1e63ae2059b78dd97da9545e62da53c0841a33ecec6",
+    "previewExecutable": "C:\\bbdevtools\\target_10_3_1_995\\win32\\x86\\usr\\bin\\qmlpreview.exe",
+    "systemPlugin": "isolated stubs; device plugin not verified",
+    "errors": [],
+    "exitCode": 0,
+    "forcedStop": false,
+    "fixtureOverrides": false,
+    "evidenceDirectory": "C:\\Users\\dove\\Documents\\BBattery\\build\\qml-preview\\main.qml-pending\\ba230d58ee90",
+    "files": [
+      "C:\\Users\\dove\\Documents\\BBattery\\build\\qml-preview\\main.qml-pending\\ba230d58ee90\\frames\\frame_1_1.png",
+      "C:\\Users\\dove\\Documents\\BBattery\\build\\qml-preview\\main.qml-pending\\ba230d58ee90\\frames\\frame_1_2.png",
+      "C:\\Users\\dove\\Documents\\BBattery\\build\\qml-preview\\main.qml-pending\\ba230d58ee90\\frames\\frame_1_3.png"
+    ],
+    "deliveredScreenshot": "C:\\Users\\dove\\Documents\\BBattery\\docs\\screenshots\\0.1.0.11\\sdk-home-pending.png"
+  }
+]

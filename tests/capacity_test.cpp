@@ -1,4 +1,5 @@
 #include "../src/capacity.h"
+#include "../src/capacity_summary.h"
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -6,6 +7,8 @@
 #include <limits>
 
 int main(int argc,char **argv){
+    if(argc==2&&std::strcmp(argv[1],"--summary-sql")==0){std::puts(Battery::Capacity::summarySql().c_str());return 0;}
+    if(argc==2&&std::strcmp(argv[1],"--summary-index")==0){std::puts(Battery::Capacity::summaryIndex().c_str());return 0;}
     if(argc==2&&std::strcmp(argv[1],"--sql")==0){std::puts(Battery::Capacity::historySql().c_str());return 0;}
     if(argc==2&&std::strcmp(argv[1],"--profile-sql")==0){std::puts(Battery::Capacity::historySql(true).c_str());return 0;}
     if(argc==2&&std::strcmp(argv[1],"--candidate-sql")==0){std::puts(Battery::Capacity::historySql(false,false).c_str());return 0;}
@@ -19,6 +22,14 @@ int main(int argc,char **argv){
     int failed=0,total=0;double value=-1;
 #define CHECK(name,condition) do { ++total; if(!(condition)){++failed;std::printf("FAIL: %s\n",name);} } while(0)
     using namespace Battery::Capacity;
+    CHECK("confirmed current system reference",systemReference(true,true,true,true,true,true,1850));
+    CHECK("historical cell cannot borrow system capacity",!systemReference(false,true,true,true,true,true,1850));
+    CHECK("software marker is not confirmed hardware attribution",!systemReference(true,false,true,true,true,true,1850));
+    CHECK("design is not a full-charge source",!systemReference(true,true,true,false,true,true,2100));
+    CHECK("missing source record refuses reference",!systemReference(true,true,true,true,false,true,1850));
+    CHECK("missing estimate time refuses reference",!systemReference(true,true,true,true,true,false,1850));
+    CHECK("zero system capacity is unavailable",!systemReference(true,true,true,true,true,true,0));
+    CHECK("system NaN is unavailable",!systemReference(true,true,true,true,true,true,std::numeric_limits<double>::quiet_NaN()));
     CHECK("discharge interval",interval(false,1200,1,90,30,true,true,value)&&std::fabs(value-2000)<0.0001);
     CHECK("charge interval",interval(true,1200,1,20,80,true,true,value)&&std::fabs(value-2000)<0.0001);
     CHECK("charge direction",!interval(true,1200,1,80,20,true,true,value));

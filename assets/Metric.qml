@@ -16,9 +16,9 @@ Container {
         text: label
         textStyle.fontSize: FontSize.PercentageValue
         textStyle.fontSizeValue: 65
-        textStyle.color: Color.create("#93a4b2")
+        textStyle.color: Color.create("#b9c7d2")
         topMargin: 0; bottomMargin: 0
-        autoSize.maxLineCount: 1
+        multiline: true; autoSize.maxLineCount: 2
     }
     Container {
         layout: StackLayout { orientation: LayoutOrientation.LeftToRight }
@@ -28,7 +28,7 @@ Container {
             textStyle.fontSize: FontSize.PercentageValue
             textStyle.fontSizeValue: 105
             textStyle.fontWeight: FontWeight.W500
-            textStyle.color: Color.create(displayValue === "--" ? "#617280" : accent)
+            textStyle.color: Color.create(displayValue === "--" ? "#b9c7d2" : accent)
             topMargin: 0; bottomMargin: 0; rightMargin: ui.du(0.5)
             autoSize.maxLineCount: 1
         }
@@ -38,7 +38,7 @@ Container {
             verticalAlignment: VerticalAlignment.Bottom
             textStyle.fontSize: FontSize.PercentageValue
             textStyle.fontSizeValue: 60
-            textStyle.color: Color.create("#93a4b2")
+            textStyle.color: Color.create("#b9c7d2")
             topMargin: 0; bottomMargin: ui.du(0.3)
         }
     }
@@ -46,7 +46,7 @@ Container {
         text: note; visible: note !== ""
         textStyle.fontSize: FontSize.PercentageValue
         textStyle.fontSizeValue: 60
-        textStyle.color: Color.create("#748896")
+        textStyle.color: Color.create("#b9c7d2")
         topMargin: ui.du(0.2); bottomMargin: 0
         autoSize.maxLineCount: 1
     }
